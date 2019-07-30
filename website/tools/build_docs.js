@@ -79,11 +79,15 @@ const generateFinalMarkdown = (title, text) => {
 const extractExamplesFromMarkdownFile = ({ filePath, outputDir }) => {
     // Check file exists
     if (!fs.existsSync(filePath)) {
-        console.error(`File doesn't exist: ${filePath}`);
+        console.error(`File doesn't exist - ${filePath}`);
         return;
     }
 
-    // TODO: Verify that file is a Markdown file
+    // Verify that file is a Markdown file
+    if (path.extname(filePath) != "md") {
+        console.error(`File extension must be ".md" - ${filePath}`);
+        return;
+    }
 
     // Read Markdown file
     const markdown = fs.readFileSync(filePath).toString();
