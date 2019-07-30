@@ -77,17 +77,14 @@ const generateFinalMarkdown = (title, text) => {
 };
 
 const extractExamplesFromMarkdownFile = ({ filePath, outputDir }) => {
+
     // Check file exists
     if (!fs.existsSync(filePath)) {
         console.error(`File doesn't exist - ${filePath}`);
         return;
     }
 
-    // Verify that file is a Markdown file
-    if (path.extname(filePath) != "md") {
-        console.error(`File extension must be ".md" - ${filePath}`);
-        return;
-    }
+    // TODO: Verify that file is a Markdown file
 
     // Read Markdown file
     const markdown = fs.readFileSync(filePath).toString();
@@ -98,20 +95,20 @@ const extractExamplesFromMarkdownFile = ({ filePath, outputDir }) => {
     // Loop through each code block
     codeBlocks.forEach(({ code, lang }, index) => {
         // Skip code blocks that aren't JavaScript
-        if (lang != "js" || lang != "javascript") {
+        if (lang != "js" && lang != "javascript") {
             console.log(`Skipped code block in ${filePath}`);
             return;
         }
 
         // Skip code blocks that don't require "apify" library
-        if (!code.includes(`const Apify = require("apify");`)) {
+        if (!code.includes(`const Apify = require('apify');`) && !code.includes(`const Apify = require("apify");`)) {
             console.log(`Skipped code block in ${filePath}`);
             return;
         }
 
         // Construct unique file name
         // TODO: Update directory path
-        const newFilePath = (path.dirname(outputDir) + path.basename(filePath)).replace(path.extname(filePath), `-${index}.js`);
+        const newFilePath = path.join(outputDir, path.basename(filePath).replace(path.extname(filePath), `-${index}.js`)).toLowerCase();
 
         // Format code block
         const formattedCode = prettier.format(code, { parser: "babel" });
@@ -124,10 +121,10 @@ const extractExamplesFromMarkdownFile = ({ filePath, outputDir }) => {
 const main = async () => {
     /* input and output paths */
     const sourceFiles = path.join(__dirname, '..', '..', 'src', '**', '*.js');
-    const exampleFiles = path.join(__dirname, '..', '..', 'examples', '**', '*.js');
+    // const exampleFiles = path.join(__dirname, '..', '..', 'examples', '**', '*.js');
     const sourceFilesOutputDir = path.join(__dirname, '..', '..', 'docs', 'api');
     const typeFilesOutputDir = path.join(__dirname, '..', '..', 'docs', 'typedefs');
-    const exampleFilesOutputDir = path.join(__dirname, '..', '..', 'docs', 'examples');
+    // const exampleFilesOutputDir = path.join(__dirname, '..', '..', 'docs', 'examples');
 
     /* get template data */
     const templateData = jsdoc2md.getTemplateDataSync({ files: sourceFiles });
@@ -149,7 +146,7 @@ const main = async () => {
     // await Promise.all(examplePromises);
 
     // Extract code blocks from "Examples" in Markdown files and save as JavaScript files
-    const exampleMarkdownFiles = path.join(__dirname, '..', '..', 'docs', 'examples', '**', '*.md')
+    const exampleMarkdownFiles = path.join(__dirname, '..', '..', 'docs', 'examples', '**', '*.md');
     glob.sync(exampleMarkdownFiles).forEach(filePath => {
         extractExamplesFromMarkdownFile({ filePath, outputDir: path.join(__dirname, '..', '..', 'examples') })
     });
