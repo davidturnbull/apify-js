@@ -5,6 +5,8 @@ const path = require('path');
 const { promisify } = require('util');
 const prettier = require('prettier'); // eslint-disable-line
 const prettierConfig = require('./prettier.config');
+const extractCodeBlocks = require("gfm-code-blocks");
+const glob = require("glob");
 
 const writeFile = promisify(fs.writeFile);
 
@@ -74,6 +76,47 @@ const generateFinalMarkdown = (title, text) => {
     return prettier.format(header + text, prettierConfig);
 };
 
+const extractExamplesFromMarkdownFile = ({ filePath, outputDir }) => {
+    // Check file exists
+    if (!fs.existsSync(filePath)) {
+        console.error(`File doesn't exist: ${filePath}`);
+        return;
+    }
+
+    // TODO: Verify that file is a Markdown file
+
+    // Read Markdown file
+    const markdown = fs.readFileSync(filePath).toString();
+
+    // Extract code blocks from Markdown
+    const codeBlocks = extractCodeBlocks(markdown);
+
+    // Loop through each code block
+    codeBlocks.forEach(({ code, lang }, index) => {
+        // Skip code blocks that aren't JavaScript
+        if (lang != "js" || lang != "javascript") {
+            console.log(`Skipped code block in ${filePath}`);
+            return;
+        }
+
+        // Skip code blocks that don't require "apify" library
+        if (!code.includes(`const Apify = require("apify");`)) {
+            console.log(`Skipped code block in ${filePath}`);
+            return;
+        }
+
+        // Construct unique file name
+        // TODO: Update directory path
+        const newFilePath = (path.dirname(outputDir) + path.basename(filePath)).replace(path.extname(filePath), `-${index}.js`);
+
+        // Format code block
+        const formattedCode = prettier.format(code, { parser: "babel" });
+
+        // Write code block to .js file
+        fs.writeFileSync(newFilePath, formattedCode);
+    });
+};
+
 const main = async () => {
     /* input and output paths */
     const sourceFiles = path.join(__dirname, '..', '..', 'src', '**', '*.js');
@@ -84,22 +127,28 @@ const main = async () => {
 
     /* get template data */
     const templateData = jsdoc2md.getTemplateDataSync({ files: sourceFiles });
-    const exampleData = jsdoc2md.getTemplateDataSync({ files: exampleFiles });
+    // const exampleData = jsdoc2md.getTemplateDataSync({ files: exampleFiles });
 
     // handle examples
-    const examplePromises = exampleData.map(async (example) => {
-        const { description, meta: { filename, path: filepath, lineno } } = example;
-        const code = await readFileFromLine(path.join(filepath, filename), lineno);
-        const sep = '```';
-        const codeblock = `${sep}javascript\n${code}\n${sep}`;
+    // const examplePromises = exampleData.map(async (example) => {
+    //     const { description, meta: { filename, path: filepath, lineno } } = example;
+    //     const code = await readFileFromLine(path.join(filepath, filename), lineno);
+    //     const sep = '```';
+    //     const codeblock = `${sep}javascript\n${code}\n${sep}`;
 
-        const title = filename.split('.')[0].split('_').map(word => `${word[0].toUpperCase()}${word.substr(1)}`).join(' ');
-        const header = getHeader(title);
-        const markdown = prettier.format(`${header}\n${description}\n${codeblock}`, prettierConfig);
-        await writeFile(path.join(exampleFilesOutputDir, `${title.replace(/\s/g, '')}.md`), markdown);
+    //     const title = filename.split('.')[0].split('_').map(word => `${word[0].toUpperCase()}${word.substr(1)}`).join(' ');
+    //     const header = getHeader(title);
+    //     const markdown = prettier.format(`${header}\n${description}\n${codeblock}`, prettierConfig);
+    //     await writeFile(path.join(exampleFilesOutputDir, `${title.replace(/\s/g, '')}.md`), markdown);
+    // });
+
+    // await Promise.all(examplePromises);
+
+    // Extract code blocks from "Examples" in Markdown files and save as JavaScript files
+    const exampleMarkdownFiles = path.join(__dirname, '..', '..', 'docs', 'examples', '**', '*.md')
+    glob.sync(exampleMarkdownFiles).forEach(filePath => {
+        extractExamplesFromMarkdownFile({ filePath, outputDir: path.join(__dirname, '..', '..', 'examples') })
     });
-
-    await Promise.all(examplePromises);
 
     /* reduce templateData to an array of class names */
     templateData.forEach((identifier) => {
