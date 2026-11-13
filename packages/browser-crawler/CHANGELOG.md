@@ -1,0 +1,690 @@
+# Change Log
+
+All notable changes to this project will be documented in this file.
+See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
+
+## [3.18.1](https://github.com/apify/crawlee/compare/v3.18.0...v3.18.1) (2026-08-12)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.18.0](https://github.com/apify/crawlee/compare/v3.17.0...v3.18.0) (2026-08-04)
+
+### Bug Fixes
+
+* **core:** ignore explicitly undefined baseUrl in enqueueLinks helpers ([#3924](https://github.com/apify/crawlee/issues/3924)) ([a58a9c1](https://github.com/apify/crawlee/commit/a58a9c1417c34c2a45a10f3855c4bee721a480ae))
+* **core:** keep crawler enqueue limits when options carry explicit undefined ([#3927](https://github.com/apify/crawlee/issues/3927)) ([5f1b0ab](https://github.com/apify/crawlee/commit/5f1b0ab480f297100d2db70f646825b92f70f21a)), closes [#3924](https://github.com/apify/crawlee/issues/3924) [#3924](https://github.com/apify/crawlee/issues/3924)
+
+### Features
+
+* opt-in schema validation of request userData per router label ([#3851](https://github.com/apify/crawlee/issues/3851)) ([c7347f9](https://github.com/apify/crawlee/commit/c7347f94f72980b7c424fb4fc7dc8f990f360d70)), closes [#3747](https://github.com/apify/crawlee/issues/3747) [#3748](https://github.com/apify/crawlee/issues/3748) [#3747](https://github.com/apify/crawlee/issues/3747) [#3082](https://github.com/apify/crawlee/issues/3082)
+* support `puppeteer@25` ([#3869](https://github.com/apify/crawlee/issues/3869)) ([1430062](https://github.com/apify/crawlee/commit/1430062c2ba49c32ecb4cd4a14edd2d9a71c7ac3)), closes [#3772](https://github.com/apify/crawlee/issues/3772)
+
+
+# [3.17.0](https://github.com/apify/crawlee/compare/v3.16.0...v3.17.0) (2026-06-04)
+
+
+### Bug Fixes
+
+* BrowserCrawler closes ctx.page before errorHandler runs on navig… ([#3655](https://github.com/apify/crawlee/issues/3655)) ([ab34886](https://github.com/apify/crawlee/commit/ab348864b31edebb45e2e11f3ded3489131dcc0f))
+
+
+### Features
+
+* add `ignoreProxyCertificate` option for the internal `proxy-chain` instance ([#3418](https://github.com/apify/crawlee/issues/3418)) ([02eec66](https://github.com/apify/crawlee/commit/02eec66ecfaef94dd9903940d7969e72cf4b1fd1)), closes [#3369](https://github.com/apify/crawlee/issues/3369)
+
+
+
+
+
+# [3.16.0](https://github.com/apify/crawlee/compare/v3.15.3...v3.16.0) (2026-02-06)
+
+
+### Performance Improvements
+
+* drop `tsbuildinfo` from published packages ([#3243](https://github.com/apify/crawlee/issues/3243)) ([3450f27](https://github.com/apify/crawlee/commit/3450f27880afb9e9d857a54d9212b54c397aed91)), closes [#3239](https://github.com/apify/crawlee/issues/3239)
+
+
+
+
+
+## [3.15.3](https://github.com/apify/crawlee/compare/v3.15.2...v3.15.3) (2025-11-10)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.15.2](https://github.com/apify/crawlee/compare/v3.15.1...v3.15.2) (2025-10-23)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.15.1](https://github.com/apify/crawlee/compare/v3.15.0...v3.15.1) (2025-09-26)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.15.0](https://github.com/apify/crawlee/compare/v3.14.1...v3.15.0) (2025-09-17)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.14.1](https://github.com/apify/crawlee/compare/v3.14.0...v3.14.1) (2025-08-05)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.14.0](https://github.com/apify/crawlee/compare/v3.13.10...v3.14.0) (2025-07-25)
+
+
+### Features
+
+* add `maxCrawlDepth` crawler option ([#3045](https://github.com/apify/crawlee/issues/3045)) ([0090df9](https://github.com/apify/crawlee/commit/0090df93a12df9918d016cf2f1378f1f7d40557d)), closes [#2633](https://github.com/apify/crawlee/issues/2633)
+
+
+
+
+
+## [3.13.10](https://github.com/apify/crawlee/compare/v3.13.9...v3.13.10) (2025-07-09)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.13.9](https://github.com/apify/crawlee/compare/v3.13.8...v3.13.9) (2025-06-27)
+
+
+### Features
+
+* Report links skipped because of various filter conditions ([#3026](https://github.com/apify/crawlee/issues/3026)) ([5a867bc](https://github.com/apify/crawlee/commit/5a867bc28135803b55c765ec12e6fd04017ce53d)), closes [#3016](https://github.com/apify/crawlee/issues/3016)
+
+
+
+
+
+## [3.13.8](https://github.com/apify/crawlee/compare/v3.13.7...v3.13.8) (2025-06-16)
+
+
+### Bug Fixes
+
+* Do not enqueue more links than what the crawler is capable of processing ([#2990](https://github.com/apify/crawlee/issues/2990)) ([ea094c8](https://github.com/apify/crawlee/commit/ea094c819232e0b30bc550270836d10506eb9454)), closes [#2728](https://github.com/apify/crawlee/issues/2728)
+
+
+
+
+
+## [3.13.7](https://github.com/apify/crawlee/compare/v3.13.6...v3.13.7) (2025-06-06)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.13.6](https://github.com/apify/crawlee/compare/v3.13.5...v3.13.6) (2025-06-05)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.13.5](https://github.com/apify/crawlee/compare/v3.13.4...v3.13.5) (2025-05-20)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.13.4](https://github.com/apify/crawlee/compare/v3.13.3...v3.13.4) (2025-05-14)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.13.3](https://github.com/apify/crawlee/compare/v3.13.2...v3.13.3) (2025-05-05)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.13.2](https://github.com/apify/crawlee/compare/v3.13.1...v3.13.2) (2025-04-08)
+
+
+### Features
+
+* add `onSkippedRequest` option ([#2916](https://github.com/apify/crawlee/issues/2916)) ([764f992](https://github.com/apify/crawlee/commit/764f99203627b6a44d2ee90d623b8b0e6ecbffb5)), closes [#2910](https://github.com/apify/crawlee/issues/2910)
+
+
+
+
+
+## [3.13.1](https://github.com/apify/crawlee/compare/v3.13.0...v3.13.1) (2025-04-07)
+
+
+### Bug Fixes
+
+* don't double increment session usage count in `BrowserCrawler` ([#2908](https://github.com/apify/crawlee/issues/2908)) ([3107e55](https://github.com/apify/crawlee/commit/3107e5511142a3579adc2348fcb6a9dcadd5c0b9)), closes [#2851](https://github.com/apify/crawlee/issues/2851)
+* rename `RobotsFile` to `RobotsTxtFile` ([#2913](https://github.com/apify/crawlee/issues/2913)) ([3160f71](https://github.com/apify/crawlee/commit/3160f717e865326476d78089d778cbc7d35aa58d)), closes [#2910](https://github.com/apify/crawlee/issues/2910)
+
+
+### Features
+
+* add `respectRobotsTxtFile` crawler option ([#2910](https://github.com/apify/crawlee/issues/2910)) ([0eabed1](https://github.com/apify/crawlee/commit/0eabed1f13070d902c2c67b340621830a7f64464))
+
+
+
+
+
+# [3.13.0](https://github.com/apify/crawlee/compare/v3.12.2...v3.13.0) (2025-03-04)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.12.2](https://github.com/apify/crawlee/compare/v3.12.1...v3.12.2) (2025-01-27)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.12.1](https://github.com/apify/crawlee/compare/v3.12.0...v3.12.1) (2024-12-04)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.12.0](https://github.com/apify/crawlee/compare/v3.11.5...v3.12.0) (2024-11-04)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.11.5](https://github.com/apify/crawlee/compare/v3.11.4...v3.11.5) (2024-10-04)
+
+
+### Bug Fixes
+
+* **puppeteer:** rename `ignoreHTTPSErrors` to `acceptInsecureCerts` to support v23 ([#2684](https://github.com/apify/crawlee/issues/2684)) ([f3927e6](https://github.com/apify/crawlee/commit/f3927e6c3487deef4a2a6b0face04d3742ecd5dd))
+
+
+
+
+
+## [3.11.4](https://github.com/apify/crawlee/compare/v3.11.3...v3.11.4) (2024-09-23)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.11.3](https://github.com/apify/crawlee/compare/v3.11.2...v3.11.3) (2024-09-03)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.11.2](https://github.com/apify/crawlee/compare/v3.11.1...v3.11.2) (2024-08-28)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.11.1](https://github.com/apify/crawlee/compare/v3.11.0...v3.11.1) (2024-07-24)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.11.0](https://github.com/apify/crawlee/compare/v3.10.5...v3.11.0) (2024-07-09)
+
+
+### Features
+
+* add `iframe` expansion to `parseWithCheerio` in browsers ([#2542](https://github.com/apify/crawlee/issues/2542)) ([328d085](https://github.com/apify/crawlee/commit/328d08598807782b3712bd543e394fe9a000a85d)), closes [#2507](https://github.com/apify/crawlee/issues/2507)
+* add `ignoreIframes` opt-out from the Cheerio iframe expansion ([#2562](https://github.com/apify/crawlee/issues/2562)) ([474a8dc](https://github.com/apify/crawlee/commit/474a8dc06a567cde0651d385fdac9c350ddf4508))
+
+
+
+
+
+## [3.10.5](https://github.com/apify/crawlee/compare/v3.10.4...v3.10.5) (2024-06-12)
+
+
+### Bug Fixes
+
+* declare missing peer dependencies in `@crawlee/browser` package ([#2532](https://github.com/apify/crawlee/issues/2532)) ([3357c7f](https://github.com/apify/crawlee/commit/3357c7fc5ab071b12f72097c190dbee9990e3751))
+* mark `context.request.loadedUrl` and `id` as required inside the request handler ([#2531](https://github.com/apify/crawlee/issues/2531)) ([2b54660](https://github.com/apify/crawlee/commit/2b546600691d84852a2f9ef42f273cecf818d66d))
+
+
+
+
+
+## [3.10.4](https://github.com/apify/crawlee/compare/v3.10.3...v3.10.4) (2024-06-11)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.10.3](https://github.com/apify/crawlee/compare/v3.10.2...v3.10.3) (2024-06-07)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.10.2](https://github.com/apify/crawlee/compare/v3.10.1...v3.10.2) (2024-06-03)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.10.1](https://github.com/apify/crawlee/compare/v3.10.0...v3.10.1) (2024-05-23)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.10.0](https://github.com/apify/crawlee/compare/v3.9.2...v3.10.0) (2024-05-16)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.9.2](https://github.com/apify/crawlee/compare/v3.9.1...v3.9.2) (2024-04-17)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.9.1](https://github.com/apify/crawlee/compare/v3.9.0...v3.9.1) (2024-04-11)
+
+
+### Features
+
+* `browserPerProxy` browser launch option ([#2418](https://github.com/apify/crawlee/issues/2418)) ([df57b29](https://github.com/apify/crawlee/commit/df57b2965ac8c8b3adf807e3bad8a649814fa213))
+
+
+
+
+
+# [3.9.0](https://github.com/apify/crawlee/compare/v3.8.2...v3.9.0) (2024-04-10)
+
+
+### Features
+
+* `tieredProxyUrls` for ProxyConfiguration ([#2348](https://github.com/apify/crawlee/issues/2348)) ([5408c7f](https://github.com/apify/crawlee/commit/5408c7f60a5bf4dbdba92f2d7440e0946b94ea6e))
+* better `newUrlFunction` for ProxyConfiguration ([#2392](https://github.com/apify/crawlee/issues/2392)) ([330598b](https://github.com/apify/crawlee/commit/330598b348ad27bc7c73732294a14b655ccd3507)), closes [#2348](https://github.com/apify/crawlee/issues/2348) [#2065](https://github.com/apify/crawlee/issues/2065)
+* expand #shadow-root elements automatically in `parseWithCheerio` helper ([#2396](https://github.com/apify/crawlee/issues/2396)) ([a05b3a9](https://github.com/apify/crawlee/commit/a05b3a93a9b57926b353df0e79d846b5024c42ac))
+
+
+
+
+
+## [3.8.2](https://github.com/apify/crawlee/compare/v3.8.1...v3.8.2) (2024-03-21)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.8.1](https://github.com/apify/crawlee/compare/v3.8.0...v3.8.1) (2024-02-22)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.8.0](https://github.com/apify/crawlee/compare/v3.7.3...v3.8.0) (2024-02-21)
+
+
+### Features
+
+* adaptive playwright crawler ([#2316](https://github.com/apify/crawlee/issues/2316)) ([8e4218a](https://github.com/apify/crawlee/commit/8e4218ada03cf485751def46f8c465b2d2a825c7))
+
+
+
+
+
+## [3.7.3](https://github.com/apify/crawlee/compare/v3.7.2...v3.7.3) (2024-01-30)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.7.2](https://github.com/apify/crawlee/compare/v3.7.1...v3.7.2) (2024-01-09)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.7.1](https://github.com/apify/crawlee/compare/v3.7.0...v3.7.1) (2024-01-02)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.7.0](https://github.com/apify/crawlee/compare/v3.6.2...v3.7.0) (2023-12-21)
+
+
+### Bug Fixes
+
+* `retryOnBlocked` doesn't override the blocked HTTP codes ([#2243](https://github.com/apify/crawlee/issues/2243)) ([81672c3](https://github.com/apify/crawlee/commit/81672c3d1db1dcdcffb868de5740addff82cf112))
+
+
+### Features
+
+* check enqueue link strategy post redirect ([#2238](https://github.com/apify/crawlee/issues/2238)) ([3c5f9d6](https://github.com/apify/crawlee/commit/3c5f9d6056158e042e12d75b2b1b21ef6c32e618)), closes [#2173](https://github.com/apify/crawlee/issues/2173)
+* log cause with `retryOnBlocked` ([#2252](https://github.com/apify/crawlee/issues/2252)) ([e19a773](https://github.com/apify/crawlee/commit/e19a773693cfc5e65c1e2321bfc8b73c9844ea8b)), closes [#2249](https://github.com/apify/crawlee/issues/2249)
+
+
+
+
+
+## [3.6.2](https://github.com/apify/crawlee/compare/v3.6.1...v3.6.2) (2023-11-26)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.6.1](https://github.com/apify/crawlee/compare/v3.6.0...v3.6.1) (2023-11-15)
+
+
+### Features
+
+* **puppeteer:** enable `new` headless mode ([#1910](https://github.com/apify/crawlee/issues/1910)) ([7fc999c](https://github.com/apify/crawlee/commit/7fc999cf4658ca69b97f16d434444081998470f4))
+
+
+
+
+
+# [3.6.0](https://github.com/apify/crawlee/compare/v3.5.8...v3.6.0) (2023-11-15)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.5.8](https://github.com/apify/crawlee/compare/v3.5.7...v3.5.8) (2023-10-17)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.5.7](https://github.com/apify/crawlee/compare/v3.5.6...v3.5.7) (2023-10-05)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.5.6](https://github.com/apify/crawlee/compare/v3.5.5...v3.5.6) (2023-10-04)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.5.5](https://github.com/apify/crawlee/compare/v3.5.4...v3.5.5) (2023-10-02)
+
+
+### Features
+
+* Request Queue v2 ([#1975](https://github.com/apify/crawlee/issues/1975)) ([70a77ee](https://github.com/apify/crawlee/commit/70a77ee15f984e9ae67cd584fc58ace7e55346db)), closes [#1365](https://github.com/apify/crawlee/issues/1365)
+
+
+
+
+
+## [3.5.4](https://github.com/apify/crawlee/compare/v3.5.3...v3.5.4) (2023-09-11)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.5.3](https://github.com/apify/crawlee/compare/v3.5.2...v3.5.3) (2023-08-31)
+
+
+### Bug Fixes
+
+* pin all internal dependencies ([#2041](https://github.com/apify/crawlee/issues/2041)) ([d6f2b17](https://github.com/apify/crawlee/commit/d6f2b172d4a6776137c7893ca798d5b4a9408e79)), closes [#2040](https://github.com/apify/crawlee/issues/2040)
+
+
+
+
+
+## [3.5.2](https://github.com/apify/crawlee/compare/v3.5.1...v3.5.2) (2023-08-21)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.5.1](https://github.com/apify/crawlee/compare/v3.5.0...v3.5.1) (2023-08-16)
+
+
+### Bug Fixes
+
+* log original error message on session rotation ([#2022](https://github.com/apify/crawlee/issues/2022)) ([8a11ffb](https://github.com/apify/crawlee/commit/8a11ffbdaef6b2fe8603aac570c3038f84c2f203))
+
+
+
+
+
+# [3.5.0](https://github.com/apify/crawlee/compare/v3.4.2...v3.5.0) (2023-07-31)
+
+
+### Features
+
+* retire session on proxy error ([#2002](https://github.com/apify/crawlee/issues/2002)) ([8c0928b](https://github.com/apify/crawlee/commit/8c0928b24ceabefc454f8114ac30a27023709010)), closes [#1912](https://github.com/apify/crawlee/issues/1912)
+
+
+
+
+
+## [3.4.2](https://github.com/apify/crawlee/compare/v3.4.1...v3.4.2) (2023-07-19)
+
+
+### Features
+
+* retryOnBlocked detects blocked webpage ([#1956](https://github.com/apify/crawlee/issues/1956)) ([766fa9b](https://github.com/apify/crawlee/commit/766fa9b88029e9243a7427075384c1abe85c70c8))
+
+
+
+
+
+## [3.4.1](https://github.com/apify/crawlee/compare/v3.4.0...v3.4.1) (2023-07-13)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.4.0](https://github.com/apify/crawlee/compare/v3.3.3...v3.4.0) (2023-06-12)
+
+
+### Bug Fixes
+
+* respect `<base>` when enqueuing ([#1936](https://github.com/apify/crawlee/issues/1936)) ([aeef572](https://github.com/apify/crawlee/commit/aeef57231c84671374ed0309b7b95fa9ce9a6e8b))
+
+
+
+
+
+## [3.3.3](https://github.com/apify/crawlee/compare/v3.3.2...v3.3.3) (2023-05-31)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.3.2](https://github.com/apify/crawlee/compare/v3.3.1...v3.3.2) (2023-05-11)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.3.1](https://github.com/apify/crawlee/compare/v3.3.0...v3.3.1) (2023-04-11)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.3.0](https://github.com/apify/crawlee/compare/v3.2.2...v3.3.0) (2023-03-09)
+
+
+### Bug Fixes
+
+* ignore invalid URLs in `enqueueLinks` in browser crawlers ([#1803](https://github.com/apify/crawlee/issues/1803)) ([5ac336c](https://github.com/apify/crawlee/commit/5ac336c5b83b212fd6281659b8ceee091e259ff1))
+
+
+
+
+
+## [3.2.2](https://github.com/apify/crawlee/compare/v3.2.1...v3.2.2) (2023-02-08)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.2.1](https://github.com/apify/crawlee/compare/v3.2.0...v3.2.1) (2023-02-07)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# [3.2.0](https://github.com/apify/crawlee/compare/v3.1.4...v3.2.0) (2023-02-07)
+
+
+### Bug Fixes
+
+* declare missing dependency on `tslib` ([27e96c8](https://github.com/apify/crawlee/commit/27e96c80c26e7fc31809a4b518d699573cb8c662)), closes [#1747](https://github.com/apify/crawlee/issues/1747)
+
+
+
+
+
+## [3.1.4](https://github.com/apify/crawlee/compare/v3.1.3...v3.1.4) (2022-12-14)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.1.3](https://github.com/apify/crawlee/compare/v3.1.2...v3.1.3) (2022-12-07)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## 3.1.2 (2022-11-15)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## 3.1.1 (2022-11-07)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+# 3.1.0 (2022-10-13)
+
+**Note:** Version bump only for package @crawlee/browser
+
+
+
+
+
+## [3.0.4](https://github.com/apify/crawlee/compare/v3.0.3...v3.0.4) (2022-08-22)
+
+
+### Features
+
+* enable tab-as-a-container for Firefox ([#1456](https://github.com/apify/crawlee/issues/1456)) ([ae5ba4f](https://github.com/apify/crawlee/commit/ae5ba4f15fd6d14f444486234753ce1781c74cc8))

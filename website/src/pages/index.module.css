@@ -1,0 +1,257 @@
+/************* PAGE LAYOUT *************/
+
+#homepageContainer {
+    width: calc(100% - 48px) !important;
+    max-width: 1200px !important;
+    border-left: 1px solid var(--color-separator);
+    border-right: 1px solid var(--color-separator);
+    margin: 0 24px;
+}
+
+.dashedSeparator {
+    position: relative;
+    width: 100%;
+    border-bottom: 1px dashed var(--color-separator);
+}
+
+.dashedSeparatorVertical {
+    position: relative;
+    border-right: 1px dashed var(--color-separator);
+}
+
+.dashedDecorativeCircle {
+    width: 120px;
+    height: 120px;
+    border: 1px dashed var(--color-separator);
+    border-radius: 50%;
+    position: absolute;
+    transform: translate(-50%, -50%);
+}
+
+.fadedOutSeparator {
+    border: none;
+    height: 1px;
+    background-image:
+        linear-gradient(
+            90deg,
+            transparent,
+            transparent 50%,
+            var(--color-background) 50%,
+            var(--color-background) 100%
+        ),
+        linear-gradient(
+            90deg,
+            var(--color-separator) 0%,
+            transparent 50%,
+            var(--color-separator) 100%
+        );
+    background-size:
+        6px 1px,
+        100% 1px;
+}
+
+.fadedOutSeparatorVertical {
+    border: none;
+    width: 1px;
+    background-image:
+        linear-gradient(
+            180deg,
+            transparent,
+            transparent 50%,
+            var(--color-background) 50%,
+            var(--color-background) 100%
+        ),
+        linear-gradient(
+            180deg,
+            var(--color-separator) 0%,
+            transparent 50%,
+            var(--color-separator) 100%
+        );
+    background-size:
+        1px 6px,
+        1px 100%;
+}
+
+.trianglesSeparator {
+    width: 100%;
+    height: 32px;
+    background-position: center;
+    background-repeat: repeat-x;
+    background-image: url('../../static/img/triangles_light.svg');
+
+    html[data-theme='dark'] & {
+        background-image: url('../../static/img/triangles_dark.svg');
+    }
+
+    /* TABLET */
+    @media (min-width: 768px) {
+        background-position: unset;
+        background-repeat: repeat;
+        height: 52px;
+    }
+}
+
+/* most separators and decorations are not displayed on mobile */
+.dashedSeparatorVertical,
+.dashedDecorativeCircle,
+.fadedOutSeparator,
+.fadedOutSeparatorVertical {
+    display: none;
+}
+
+/* TABLET */
+@media (min-width: 768px) {
+    .dashedSeparatorVertical,
+    .dashedDecorativeCircle,
+    .fadedOutSeparator,
+    .fadedOutSeparatorVertical {
+        display: block;
+    }
+
+    #homepageContainer {
+        width: calc(100% - 80px) !important;
+        margin: 0 40px;
+    }
+}
+
+/* DESKTOP */
+@media (min-width: 1024px) {
+    .dashedSeparatorVertical,
+    .dashedDecorativeCircle,
+    .fadedOutSeparator,
+    .fadedOutSeparatorVertical {
+        display: block;
+    }
+
+    #homepageContainer {
+        width: calc(100% - 128px) !important;
+        margin: 0 64px;
+    }
+}
+
+/************* LANGUAGE GET STARTED SECTION *************/
+
+.languageGetStartedSection {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
+    margin: 0 0 24px 0;
+
+    div[class^='languageGetStartedContainer'] {
+        flex: 1;
+    }
+}
+
+/* TABLET */
+@media (min-width: 768px) {
+    .languageGetStartedSection {
+        flex-direction: row;
+        align-items: stretch;
+        justify-content: space-around;
+        gap: 0;
+        margin: 0;
+    }
+}
+
+/************* CODE EXAMPLE SECTION *************/
+
+.codeExampleSection {
+    display: flex;
+    flex-direction: column;
+}
+
+.languageSwitchContainer {
+    place-self: center;
+    margin: 32px 0 16px 0;
+}
+
+.codeBlockContainer {
+    :global(.theme-code-block) {
+        margin-bottom: 32px;
+        border-radius: 0;
+        box-shadow: none;
+        border-bottom: 1px dashed var(--color-separator);
+        border-top: 1px dashed var(--color-separator);
+
+        code {
+            font-size: 14px;
+            background: var(--color-background-muted);
+            padding: 16px 8px 16px 4px;
+            span::before {
+                margin-right: 16px !important;
+                color: var(--color-text-subtle);
+                opacity: 1 !important;
+            }
+        }
+        pre {
+            border-radius: 0;
+        }
+    }
+}
+
+/* TABLET */
+@media (min-width: 768px) {
+    .codeBlockContainer :global(.theme-code-block) {
+        margin-bottom: 0;
+        border-bottom: none;
+        border-top: none;
+    }
+    .codeExampleSection {
+        position: relative;
+    }
+
+    .languageSwitchContainer {
+        margin: 0;
+        position: absolute;
+        top: calc(46px - 18px);
+        left: calc(50% - 90px);
+    }
+
+    .decorativeRow {
+        position: relative;
+        height: 46px;
+        border-bottom: 1px dashed var(--color-separator);
+
+        &::before {
+            content: ' ';
+            position: absolute;
+            left: 40px;
+            height: 100%;
+            border-right: 1px dashed var(--color-separator);
+        }
+
+        &::after {
+            content: ' ';
+            position: absolute;
+            right: 40px;
+            height: 100%;
+            border-left: 1px dashed var(--color-separator);
+        }
+    }
+
+    .codeBlockContainer {
+        margin: 0 40px;
+        border-left: 1px dashed var(--color-separator);
+        border-right: 1px dashed var(--color-separator);
+    }
+}
+
+@media (min-width: 1024px) {
+    .decorativeRow {
+        &::before {
+            left: 60px;
+        }
+
+        &::after {
+            right: 60px;
+        }
+    }
+    .codeBlockContainer {
+        margin: 0 60px;
+    }
+}
+
+#ctaDecorativeCircle {
+    width: 120px;
+    height: 120px;
+}

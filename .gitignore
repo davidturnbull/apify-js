@@ -2,6 +2,7 @@ build
 dist
 build-docs
 node_modules
+yarn.lock
 *.log
 *.pid
 *.seed
@@ -13,12 +14,26 @@ logs
 pids
 .idea
 .vscode
-yarn.lock
+.zed
 package-lock.json
 tmp
 jsconfig.json
-types
 docs/api
 docs/typedefs
-docs/examples
 .history
+.docusaurus
+**/*.tsbuildinfo
+apify_storage
+crawlee_storage
+storage
+.turbo
+test/e2e/**/packages
+test/e2e/**/.actorignore
+
+.yarn
+
+# Local vitest config overrides
+vitest.config.local.mts
+
+# API Extractor intermediate reports (the committed reports live in docs/public-api/*.api.md)
+docs/public-api/temp

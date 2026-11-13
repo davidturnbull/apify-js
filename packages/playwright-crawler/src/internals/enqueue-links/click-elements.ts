@@ -1,0 +1,568 @@
+import { URL } from 'node:url';
+
+import type {
+    IRequestManager,
+    RequestOptions,
+    RequestTransform,
+    SkippedRequestCallback,
+    UrlPatternInput,
+} from '@crawlee/browser';
+import {
+    applyRequestTransform,
+    constructUrlPatternObjects,
+    createRequestOptions,
+    createSkippedRequestArgs,
+    filterRequestOptionsByPatterns,
+    urlPatternSchema,
+    Request as CrawleeRequest,
+    serviceLocator,
+} from '@crawlee/browser';
+import type { BatchAddRequestsResult, Dictionary } from '@crawlee/types';
+import { parseArgument, schemas } from '@crawlee/utils/internal';
+import type { Frame, Page, Request, Route } from 'playwright';
+import { z } from 'zod';
+
+const STARTING_Z_INDEX = 2147400000;
+const getLog = () => serviceLocator.getChildLog('Playwright Click Elements');
+
+type ClickOptions = Parameters<Page['click']>[1];
+
+const enqueueLinksByClickingElementsOptionsSchema = z.strictObject({
+    page: schemas.objectWithKeys(['goto', 'evaluate']),
+    requestManager: schemas.objectWithKeys(['fetchNextRequest', 'addRequestsBatched']),
+    selector: z.string(),
+    userData: schemas.anyObject.optional(),
+    clickOptions: schemas.anyObject.optional(),
+    include: schemas.arrayOf(urlPatternSchema, 'URL patterns').optional(),
+    exclude: schemas.arrayOf(urlPatternSchema, 'URL patterns').optional(),
+    transformRequestFunction: schemas.anyFunction.optional(),
+    waitForPageIdleSecs: schemas.anyNumber.default(1),
+    maxWaitForPageIdleSecs: schemas.anyNumber.default(5),
+    label: z.string().optional(),
+    forefront: z.boolean().optional(),
+    skipNavigation: z.boolean().optional(),
+    onSkippedRequest: schemas.anyFunction.optional(),
+});
+
+export interface EnqueueLinksByClickingElementsOptions {
+    /**
+     * Playwright [`Page`](https://playwright.dev/docs/api/class-page) object.
+     */
+    page: Page;
+
+    /**
+     * * A request manager to which the URLs will be enqueued.
+     */
+    requestManager: IRequestManager;
+
+    /**
+     * A CSS selector matching elements to be clicked on. Unlike in {@apilink enqueueLinks}, there is no default
+     * value. This is to prevent suboptimal use of this function by using it too broadly.
+     */
+    selector: string;
+
+    /** Sets {@apilink Request.userData} for newly enqueued requests. */
+    userData?: Dictionary;
+
+    /** Sets {@apilink Request.label} for newly enqueued requests. */
+    label?: string;
+
+    /**
+     * Click options for use in Playwright click handler.
+     */
+    clickOptions?: ClickOptions;
+
+    /**
+     * An array of URL patterns that URLs must match to be enqueued.
+     *
+     * Accepts glob pattern strings, `{ glob: string }` objects, `RegExp` instances, or `{ regexp: RegExp }` objects.
+     *
+     * Glob matching is always case-insensitive.
+     * If you need case-sensitive matching, use a `RegExp`.
+     *
+     * If `include` is an empty array or `undefined`, then the function
+     * enqueues all the intercepted navigation requests produced by the page
+     * after clicking on elements matching the provided CSS selector.
+     */
+    include?: UrlPatternInput[];
+
+    /**
+     * An array of URL patterns. Matching URLs will **not** be enqueued.
+     *
+     * Accepts glob pattern strings, `{ glob: string }` objects, `RegExp` instances, or `{ regexp: RegExp }` objects.
+     *
+     * Glob matching is always case-insensitive.
+     * If you need case-sensitive matching, use a `RegExp`.
+     */
+    exclude?: readonly UrlPatternInput[];
+
+    /**
+     * After request options are filtered by `include`/`exclude` patterns,
+     * this function can be used to remove them or modify their contents such as `userData`, `payload` or, most importantly
+     * `uniqueKey`. This is useful when you need to enqueue multiple `Requests` to the queue that share the same URL,
+     * but differ in methods or payloads, or to dynamically update or create `userData`.
+     *
+     * **Example:**
+     * ```javascript
+     * {
+     *     transformRequestFunction: (request) => {
+     *         request.userData.foo = 'bar';
+     *         return request;
+     *     }
+     * }
+     * ```
+     *
+     * Note that `transformRequestFunction` has the highest priority and can overwrite
+     * the global `label` option.
+     *
+     * The function receives a {@apilink RequestOptions} object and can return either:
+     * - The modified {@apilink RequestOptions} object
+     * - `'unchanged'` to keep the original options as-is
+     * - A falsy value or `'skip'` to exclude the request from the queue
+     */
+    transformRequestFunction?: RequestTransform;
+
+    /**
+     * Clicking in the page triggers various asynchronous operations that lead to new URLs being shown
+     * by the browser. It could be a simple JavaScript redirect or opening of a new tab in the browser.
+     * These events often happen only some time after the actual click. Requests typically take milliseconds
+     * while new tabs open in hundreds of milliseconds.
+     *
+     * To be able to capture all those events, the `enqueueLinksByClickingElements()` function repeatedly waits
+     * for the `waitForPageIdleSecs`. By repeatedly we mean that whenever a relevant event is triggered, the timer
+     * is restarted. As long as new events keep coming, the function will not return, unless
+     * the below `maxWaitForPageIdleSecs` timeout is reached.
+     *
+     * You may want to reduce this for example when you're sure that your clicks do not open new tabs,
+     * or increase when you're not getting all the expected URLs.
+     * @default 1
+     */
+    waitForPageIdleSecs?: number;
+
+    /**
+     * This is the maximum period for which the function will keep tracking events, even if more events keep coming.
+     * Its purpose is to prevent a deadlock in the page by periodic events, often unrelated to the clicking itself.
+     * See `waitForPageIdleSecs` above for an explanation.
+     * @default 5
+     */
+    maxWaitForPageIdleSecs?: number;
+
+    /**
+     * If set to `true`:
+     *   - while adding the request to the queue: the request will be added to the foremost position in the queue.
+     *   - while reclaiming the request: the request will be placed to the beginning of the queue, so that it's returned
+     *   in the next call to {@apilink RequestQueue.fetchNextRequest}.
+     * By default, it's put to the end of the queue.
+     * @default false
+     */
+    forefront?: boolean;
+
+    /**
+     * If set to `true`, tells the crawler to skip navigation and process the request directly.
+     * @default false
+     */
+    skipNavigation?: boolean;
+
+    /**
+     * When a request is skipped for some reason, you can use this callback to act on it.
+     * This is fired for requests skipped because they don't match enqueueLinks filters
+     * or because they were removed by `transformRequestFunction`.
+     */
+    onSkippedRequest?: SkippedRequestCallback;
+}
+
+/**
+ * The function finds elements matching a specific CSS selector in a Playwright page,
+ * clicks all those elements using a mouse move and a left mouse button click and intercepts
+ * all the navigation requests that are subsequently produced by the page. The intercepted
+ * requests, including their methods, headers and payloads are then enqueued to a provided
+ * {@apilink RequestQueue}. This is useful to crawl JavaScript heavy pages where links are not available
+ * in `href` elements, but rather navigations are triggered in click handlers.
+ * If you're looking to find URLs in `href` attributes of the page, see {@apilink enqueueLinks}.
+ *
+ * Optionally, the function allows you to filter the target links' URLs using an array of glob or regexp patterns.
+ *
+ * **IMPORTANT**: To be able to do this, this function uses various mutations on the page,
+ * such as changing the Z-index of elements being clicked and their visibility. Therefore,
+ * it is recommended to only use this function as the last operation in the page.
+ *
+ * **USING HEADFUL BROWSER**: When using a headful browser, this function will only be able to click elements
+ * in the focused tab, effectively limiting concurrency to 1. In headless mode, full concurrency can be achieved.
+ *
+ * **PERFORMANCE**: Clicking elements with a mouse and intercepting requests is not a low level operation
+ * that takes nanoseconds. It's not very CPU intensive, but it takes time. We strongly recommend limiting
+ * the scope of the clicking as much as possible by using a specific selector that targets only the elements
+ * that you assume or know will produce a navigation. You can certainly click everything by using
+ * the `*` selector, but be prepared to wait minutes to get results on a large and complex page.
+ *
+ * **Example usage**
+ *
+ * ```javascript
+ * await playwrightUtils.enqueueLinksByClickingElements({
+ *   page,
+ *   requestManager,
+ *   selector: 'a.product-detail',
+ *   include: [
+ *       'https://www.example.com/handbags/*',
+ *       'https://www.example.com/purses/*',
+ *   ],
+ * });
+ * ```
+ *
+ * @returns Promise that resolves to {@apilink BatchAddRequestsResult} object.
+ */
+export async function enqueueLinksByClickingElements(
+    options: EnqueueLinksByClickingElementsOptions,
+): Promise<BatchAddRequestsResult> {
+    const parsedOptions = parseArgument(
+        options,
+        enqueueLinksByClickingElementsOptionsSchema,
+        'EnqueueLinksByClickingElementsOptions',
+    );
+
+    const {
+        page,
+        requestManager,
+        selector,
+        clickOptions,
+        include,
+        exclude,
+        transformRequestFunction,
+        waitForPageIdleSecs,
+        maxWaitForPageIdleSecs,
+        forefront,
+        onSkippedRequest,
+    } = parsedOptions;
+
+    const waitForPageIdleMillis = waitForPageIdleSecs * 1000;
+    const maxWaitForPageIdleMillis = maxWaitForPageIdleSecs * 1000;
+    const hasOnSkippedRequest = onSkippedRequest !== undefined;
+
+    const urlExcludePatternObjects = exclude?.length ? constructUrlPatternObjects(exclude) : [];
+    const urlPatternObjects = include?.length ? constructUrlPatternObjects(include) : [];
+
+    const interceptedRequests = await clickElementsAndInterceptNavigationRequests({
+        page,
+        selector,
+        waitForPageIdleMillis,
+        maxWaitForPageIdleMillis,
+        clickOptions,
+    });
+    const requestOptions = createRequestOptions(interceptedRequests, parsedOptions);
+    const skippedByFilters: RequestOptions[] = [];
+    let filteredOptions = filterRequestOptionsByPatterns(
+        requestOptions,
+        urlPatternObjects.length > 0 ? urlPatternObjects : undefined,
+        urlExcludePatternObjects,
+        undefined,
+        hasOnSkippedRequest ? (opts) => skippedByFilters.push(opts) : undefined,
+    );
+
+    if (onSkippedRequest && skippedByFilters.length > 0) {
+        await Promise.all(
+            skippedByFilters.map(async (opts) => onSkippedRequest(createSkippedRequestArgs(opts, 'filters'))),
+        );
+    }
+
+    if (transformRequestFunction) {
+        const skippedByTransform: RequestOptions[] = [];
+        filteredOptions = applyRequestTransform(
+            filteredOptions,
+            transformRequestFunction,
+            hasOnSkippedRequest ? (r) => skippedByTransform.push(r) : undefined,
+        );
+        if (onSkippedRequest && skippedByTransform.length > 0) {
+            await Promise.all(
+                skippedByTransform.map(async (r) => onSkippedRequest(createSkippedRequestArgs(r, 'transform'))),
+            );
+        }
+    }
+
+    const requests = filteredOptions.map((opts) => new CrawleeRequest(opts));
+    const { addedRequests } = await requestManager.addRequestsBatched(requests, { forefront });
+
+    return { processedRequests: addedRequests, unprocessedRequests: [] };
+}
+
+interface WaitForPageIdleOptions {
+    page: Page;
+    waitForPageIdleMillis?: number;
+    maxWaitForPageIdleMillis?: number;
+}
+
+interface ClickElementsAndInterceptNavigationRequestsOptions extends WaitForPageIdleOptions {
+    selector: string;
+    clickOptions?: ClickOptions;
+}
+
+/**
+ * Clicks all elements of given page matching given selector.
+ * Catches and intercepts all initiated navigation requests and opened pages.
+ * Returns a list of all target URLs.
+ * @ignore
+ */
+export async function clickElementsAndInterceptNavigationRequests(
+    options: ClickElementsAndInterceptNavigationRequestsOptions,
+): Promise<Dictionary[]> {
+    const { page, selector, waitForPageIdleMillis, maxWaitForPageIdleMillis, clickOptions } = options;
+
+    const uniqueRequests = new Set<string>();
+    const context = page.context();
+
+    const onInterceptedRequest = createInterceptRequestHandler(page, uniqueRequests);
+    const onPopup = createTargetCreatedHandler(uniqueRequests);
+    const onFrameNavigated = createFrameNavigatedHandler(page, uniqueRequests);
+
+    await context.route('**', onInterceptedRequest);
+    // context.on('BrowserEmittedEvents.TargetCreated', onTargetCreated);
+    page.on('framenavigated', onFrameNavigated);
+    page.on('popup', onPopup);
+
+    await preventHistoryNavigation(page);
+
+    await clickElements(page, selector, clickOptions);
+    await waitForPageIdle({ page, waitForPageIdleMillis, maxWaitForPageIdleMillis });
+
+    await restoreHistoryNavigationAndSaveCapturedUrls(page, uniqueRequests);
+
+    // browser.off(BrowserEmittedEvents.TargetCreated, onTargetCreated);
+    page.off('framenavigated', onFrameNavigated);
+    await context.unroute('**', onInterceptedRequest);
+
+    const serializedRequests = Array.from(uniqueRequests);
+    return serializedRequests.map((r) => JSON.parse(r));
+}
+
+/**
+ * @ignore
+ */
+function createInterceptRequestHandler(
+    page: Page,
+    requests: Set<string>,
+): (route: Route, request: Request) => Promise<void> {
+    return async function onInterceptedRequest(route, request) {
+        if (!isTopFrameNavigationRequest(page, request)) return route.continue();
+        requests.add(
+            JSON.stringify({
+                url: request.url(),
+                headers: request.headers(),
+                method: request.method(),
+                payload: request.postData() ?? undefined,
+            }),
+        );
+
+        if (request.redirectedFrom()) {
+            return route.fulfill({ body: '' }); // Prevents 301/302 redirect
+        }
+        return route.abort('aborted'); // Prevents navigation
+    };
+}
+
+/**
+ * @ignore
+ */
+function createTargetCreatedHandler(requests: Set<string>): (popup: Page) => Promise<void> {
+    return async function onTargetCreated(popup) {
+        const url = popup.url();
+        requests.add(JSON.stringify({ url }));
+
+        // We want to close the page but don't care about
+        // possible errors like target closed.
+        try {
+            await popup.close();
+        } catch (err) {
+            getLog().debug('enqueueLinksByClickingElements: Could not close spawned page.', {
+                error: (err as Error).stack,
+            });
+        }
+    };
+}
+
+/**
+ * @ignore
+ */
+function isTopFrameNavigationRequest(page: Page, req: Request): boolean {
+    try {
+        return req.isNavigationRequest() && req.frame() === page.mainFrame();
+    } catch {
+        // `req.frame()` throws when the owning frame is unavailable - e.g. the request was
+        // issued by a service worker, or before/after its frame existed (see #3216). Such a
+        // request is not a top-frame navigation, so swallow the throw and let it pass through
+        // instead of crashing the route handler (which would leave the route unhandled).
+        return false;
+    }
+}
+
+/**
+ * @ignore
+ */
+function createFrameNavigatedHandler(page: Page, requests: Set<string>): (frame: Frame) => void {
+    return function onFrameNavigated(frame) {
+        if (frame !== page.mainFrame()) return;
+        const url = frame.url();
+        requests.add(JSON.stringify({ url }));
+    };
+}
+
+interface ApifyWindow {
+    stateHistory: unknown[][];
+    length: number;
+    state: Dictionary;
+    go(): void;
+    back(): void;
+    forward(): void;
+    pushState(...args: unknown[]): void;
+    replaceState(...args: unknown[]): void;
+}
+
+/**
+ * @ignore
+ */
+async function preventHistoryNavigation(page: Page): Promise<unknown> {
+    /* istanbul ignore next */
+    return page.evaluate(() => {
+        (window as unknown as Dictionary).__originalHistory__ = window.history;
+        delete (window as unknown as Dictionary).history; // Simple override does not work.
+        (window as unknown as Dictionary).history = {
+            stateHistory: [],
+            length: 0,
+            state: {},
+            go() {},
+            back() {},
+            forward() {},
+            pushState(...args: unknown[]) {
+                this.stateHistory.push(args);
+            },
+            replaceState(...args: unknown[]) {
+                this.stateHistory.push(args);
+            },
+        } as ApifyWindow;
+    });
+}
+
+/* istanbul ignore next */
+/**
+ * In-browser script for updating element's CSS to make it reachable by mouse.
+ */
+function updateElementCssToEnableMouseClick(el: Element, zIndex: number): void {
+    const casted = el as HTMLElement;
+    casted.style.visibility = 'visible';
+    casted.style.display = 'block';
+    casted.style.position = 'fixed';
+    casted.style.zIndex = String(zIndex);
+    casted.style.left = '0';
+    casted.style.top = '0';
+    const boundingRect = casted.getBoundingClientRect();
+    if (!boundingRect.height) casted.style.height = '10px';
+    if (!boundingRect.width) casted.style.width = '10px';
+}
+
+/**
+ * Click all elements matching the given selector. To be able to do this using
+ * Playwright's `.click()` we need to make sure the elements are reachable by mouse,
+ * so we first move them to the top of the page's stacking context and then click.
+ * We do all in series to prevent elements from hiding one another. Therefore,
+ * for large element sets, this will take considerable amount of time.
+ * @ignore
+ */
+export async function clickElements(page: Page, selector: string, clickOptions?: ClickOptions): Promise<void> {
+    const elementHandles = await page.$$(selector);
+    getLog().debug(`enqueueLinksByClickingElements: There are ${elementHandles.length} elements to click.`);
+    let clickedElementsCount = 0;
+    let zIndex = STARTING_Z_INDEX;
+    let shouldLogWarning = true;
+    for (const handle of elementHandles) {
+        try {
+            await handle.evaluate(updateElementCssToEnableMouseClick, zIndex++);
+            await handle.click(clickOptions);
+            clickedElementsCount++;
+        } catch (err) {
+            const e = err as Error;
+            if (shouldLogWarning && e.stack!.includes('is detached from document')) {
+                getLog().warning(
+                    `An element with selector ${selector} that you're trying to click has been removed from the page. ` +
+                        'This was probably caused by an earlier click which triggered some JavaScript on the page that caused it to change. ' +
+                        'If you\'re trying to enqueue pagination links, we suggest using the "next" button, if available and going one by one.',
+                );
+                shouldLogWarning = false;
+            }
+            getLog().debug('enqueueLinksByClickingElements: Click failed.', { stack: e.stack });
+        }
+    }
+    getLog().debug(
+        `enqueueLinksByClickingElements: Successfully clicked ${clickedElementsCount} elements out of ${elementHandles.length}`,
+    );
+}
+
+/**
+ * This function tracks whether any requests, frame navigations or targets were emitted
+ * in the past idleIntervalMillis and whenever the interval registers no activity,
+ * the function returns.
+ *
+ * It will also return when a final timeout, represented by the timeoutMillis parameter
+ * is reached, to prevent blocking on pages with constant network activity.
+ *
+ * We need this to make sure we don't finish too soon when intercepting requests triggered
+ * by clicking in the page. They often get registered by the Node.js process only some
+ * milliseconds after clicking and we would lose those requests. This is especially prevalent
+ * when there's only a single element to click.
+ * @ignore
+ */
+async function waitForPageIdle({
+    page,
+    waitForPageIdleMillis,
+    maxWaitForPageIdleMillis,
+}: WaitForPageIdleOptions): Promise<void> {
+    return new Promise<void>((resolve) => {
+        let timeout: NodeJS.Timeout;
+
+        function activityHandler() {
+            clearTimeout(timeout);
+            timeout = setTimeout(() => {
+                clearTimeout(maxTimeout);
+                finish();
+            }, waitForPageIdleMillis);
+        }
+
+        function maxTimeoutHandler() {
+            getLog().debug(
+                `enqueueLinksByClickingElements: Page still showed activity after ${maxWaitForPageIdleMillis}ms. ` +
+                    'This is probably due to the website itself dispatching requests, but some links may also have been missed.',
+            );
+            finish();
+        }
+
+        function finish() {
+            page.off('request', activityHandler).off('framenavigated', activityHandler).off('popup', activityHandler);
+            resolve();
+        }
+
+        const maxTimeout = setTimeout(maxTimeoutHandler, maxWaitForPageIdleMillis);
+        page.on('popup', activityHandler);
+        activityHandler(); // We call this once manually in case there would be no requests at all.
+        page.on('request', activityHandler);
+        page.on('framenavigated', activityHandler);
+    });
+}
+
+/**
+ * @ignore
+ */
+async function restoreHistoryNavigationAndSaveCapturedUrls(page: Page, requests: Set<string>): Promise<void> {
+    /* istanbul ignore next */
+    const state = await page.evaluate(() => {
+        const { stateHistory } = window.history as unknown as ApifyWindow;
+        (window as unknown as Dictionary).history = (window as unknown as Dictionary).__originalHistory__;
+        return stateHistory;
+    });
+
+    state.forEach((args) => {
+        try {
+            const stateUrl = args[args.length - 1] as string;
+            const url = new URL(stateUrl, page.url()).href;
+            requests.add(JSON.stringify({ url }));
+        } catch (err) {
+            getLog().debug('enqueueLinksByClickingElements: Failed to ', { error: (err as Error).stack });
+        }
+    });
+}

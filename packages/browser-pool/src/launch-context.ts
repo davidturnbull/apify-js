@@ -1,0 +1,162 @@
+import type { Dictionary } from '@crawlee/types';
+import type { BrowserFingerprintWithHeaders } from 'fingerprint-generator';
+
+import type { BrowserPlugin, CommonBrowser, CommonLibrary } from './abstract-classes/browser-plugin.js';
+import type { UnwrapPromise } from './utils.js';
+
+/**
+ * `LaunchContext` holds information about the launched browser. It's useful
+ * to retrieve the `launchOptions`, the proxy the browser was launched with
+ * or any other information user chose to add to the `LaunchContext` by calling
+ * its `extend` function. This is very useful to keep track of browser-scoped
+ * values, such as session IDs.
+ */
+export interface LaunchContextOptions<
+    Library extends CommonLibrary = CommonLibrary,
+    LibraryOptions extends Dictionary | undefined = Parameters<Library['launch']>[0],
+    LaunchResult extends CommonBrowser = UnwrapPromise<ReturnType<Library['launch']>>,
+    NewPageOptions = Parameters<LaunchResult['newPage']>[0],
+    NewPageResult = UnwrapPromise<ReturnType<LaunchResult['newPage']>>,
+> {
+    /**
+     * To make identification of `LaunchContext` easier, `BrowserPool` assigns
+     * the `LaunchContext` an `id` that's equal to the `id` of the page that
+     * triggered the browser launch. This is useful, because many pages share
+     * a single launch context (single browser).
+     */
+    id?: string;
+    /**
+     * The `BrowserPlugin` instance used to launch the browser.
+     */
+    browserPlugin: BrowserPlugin<Library, LibraryOptions, LaunchResult, NewPageOptions, NewPageResult>;
+    /**
+     * The actual options the browser was launched with, after changes.
+     * Those changes would be typically made in pre-launch hooks.
+     */
+    launchOptions: LibraryOptions;
+    /**
+     * If set to `true`, the crawler respects the proxy url generated for the given request.
+     * This aligns the browser-based crawlers with the `HttpCrawler`.
+     *
+     * Might cause performance issues, as Crawlee might launch too many browser instances.
+     */
+    browserPerProxy?: boolean;
+    /**
+     * By default pages share the same browser context.
+     * If set to `true` each page uses its own context that is destroyed once the page is closed or crashes.
+     */
+    useIncognitoPages?: boolean;
+    /**
+     * Path to a User Data Directory, which stores browser session data like cookies and local storage.
+     */
+    userDataDir?: string;
+    proxyUrl?: string;
+    /**
+     * If set to `true`, TLS certificate errors from the upstream proxy will be ignored.
+     * This is useful when using HTTPS proxies with self-signed certificates.
+     */
+    ignoreProxyCertificate?: boolean;
+    /**
+     * Whether this launch context represents a connection to a remote browser
+     * rather than a locally launched one.
+     * @default false
+     * @internal
+     */
+    isRemote?: boolean;
+}
+
+export class LaunchContext<
+    Library extends CommonLibrary = CommonLibrary,
+    LibraryOptions extends Dictionary | undefined = Parameters<Library['launch']>[0],
+    LaunchResult extends CommonBrowser = UnwrapPromise<ReturnType<Library['launch']>>,
+    NewPageOptions = Parameters<LaunchResult['newPage']>[0],
+    NewPageResult = UnwrapPromise<ReturnType<LaunchResult['newPage']>>,
+> {
+    id?: string;
+    browserPlugin: BrowserPlugin<Library, LibraryOptions, LaunchResult, NewPageOptions, NewPageResult>;
+    launchOptions: LibraryOptions;
+    useIncognitoPages: boolean;
+    browserPerProxy?: boolean;
+    userDataDir: string;
+    readonly isRemote: boolean;
+    ignoreProxyCertificate?: boolean;
+
+    #proxyUrl?: string;
+    readonly #reservedFieldNames: (string | symbol)[];
+
+    fingerprint?: BrowserFingerprintWithHeaders;
+
+    [K: PropertyKey]: unknown;
+
+    constructor(options: LaunchContextOptions<Library, LibraryOptions, LaunchResult, NewPageOptions, NewPageResult>) {
+        const {
+            id,
+            browserPlugin,
+            launchOptions,
+            proxyUrl,
+            useIncognitoPages,
+            browserPerProxy,
+            userDataDir = '',
+            ignoreProxyCertificate,
+            isRemote,
+        } = options;
+
+        this.id = id;
+        this.browserPlugin = browserPlugin;
+        this.launchOptions = launchOptions;
+        this.browserPerProxy = browserPerProxy ?? false;
+        this.useIncognitoPages = useIncognitoPages ?? false;
+        this.userDataDir = userDataDir;
+        this.ignoreProxyCertificate = ignoreProxyCertificate ?? false;
+        this.isRemote = isRemote ?? false;
+
+        this.#proxyUrl = proxyUrl;
+
+        // Computed here (not in a field initializer) so that all fields already exist; the accessors live on
+        // the prototype, so they are never own keys and have to be listed explicitly.
+        this.#reservedFieldNames = [...Reflect.ownKeys(this), 'proxyUrl', 'extend'];
+    }
+
+    /**
+     * Extend the launch context with any extra fields.
+     * This is useful to keep state information relevant
+     * to the browser being launched. It ensures that
+     * no internal fields are overridden and should be
+     * used instead of property assignment.
+     */
+    extend<T extends Record<PropertyKey, unknown>>(fields: T): void {
+        Object.entries(fields).forEach(([key, value]) => {
+            if (this.#reservedFieldNames.includes(key)) {
+                throw new Error(`Cannot extend LaunchContext with key: ${key}, because it's reserved.`);
+            } else {
+                Reflect.set(this, key, value);
+            }
+        });
+    }
+
+    /**
+     * Sets a proxy URL for the browser.
+     * Use `undefined` to unset existing proxy URL.
+     */
+    set proxyUrl(url: string | undefined) {
+        if (!url) {
+            this.#proxyUrl = undefined;
+            return;
+        }
+
+        const urlInstance = new URL(url);
+        urlInstance.pathname = '/';
+        urlInstance.search = '';
+        urlInstance.hash = '';
+
+        // https://www.chromium.org/developers/design-documents/network-settings/#command-line-options-for-proxy-settings
+        this.#proxyUrl = urlInstance.href.slice(0, -1);
+    }
+
+    /**
+     * Returns the proxy URL of the browser.
+     */
+    get proxyUrl(): string | undefined {
+        return this.#proxyUrl;
+    }
+}

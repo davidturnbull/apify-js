@@ -1,0 +1,62 @@
+{
+    "name": "@crawlee/basic",
+    "version": "4.0.0",
+    "description": "The scalable web crawling and scraping library for JavaScript/Node.js. Enables development of data extraction and web automation jobs (not only) with headless Chrome and Puppeteer.",
+    "engines": {
+        "node": ">=22.13.0"
+    },
+    "type": "module",
+    "exports": {
+        ".": "./dist/index.js",
+        "./package.json": "./package.json"
+    },
+    "author": {
+        "name": "Apify",
+        "email": "support@apify.com",
+        "url": "https://apify.com"
+    },
+    "contributors": [
+        "Jan Curn <jan@apify.com>",
+        "Marek Trunkat <marek@apify.com>",
+        "Ondra Urban <ondra@apify.com>"
+    ],
+    "license": "Apache-2.0",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/apify/crawlee"
+    },
+    "bugs": {
+        "url": "https://github.com/apify/crawlee/issues"
+    },
+    "homepage": "https://crawlee.dev",
+    "scripts": {
+        "build": "pnpm clean && pnpm compile && pnpm copy",
+        "clean": "rimraf ./dist",
+        "compile": "tsc -p tsconfig.build.json",
+        "copy": "tsx ../../scripts/copy.ts"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "dependencies": {
+        "@apify/datastructures": "^3.0.1",
+        "@apify/timeout": "^1.0.1",
+        "@apify/utilities": "^3.1.1",
+        "@crawlee/core": "workspace:*",
+        "@crawlee/http-client": "workspace:^",
+        "@crawlee/types": "workspace:*",
+        "@crawlee/utils": "workspace:*",
+        "@sapphire/async-queue": "^1.5.5",
+        "@standard-schema/spec": "^1.1.0",
+        "csv-stringify": "^6.9.0",
+        "minimatch": "^11.0.8",
+        "tldts": "^7.4.22",
+        "tough-cookie": "^6.1.0",
+        "tslib": "^2.9.1",
+        "type-fest": "^4.41.0",
+        "zod": "catalog:"
+    },
+    "optionalDependencies": {
+        "@crawlee/impit-client": "workspace:^"
+    }
+}

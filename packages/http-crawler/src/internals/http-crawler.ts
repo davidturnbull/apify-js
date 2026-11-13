@@ -1,0 +1,1009 @@
+import { Readable } from 'node:stream';
+import util from 'node:util';
+
+import type {
+    BasicCrawlerOptions,
+    ConcurrencySystem,
+    ConcurrencySystemOptions,
+    ContextMiddleware,
+    CrawlingContext,
+    ErrorHandler,
+    GetUserDataFromRequest,
+    LoadedRequest,
+    CrawlingRequest,
+    RequireContextPipeline,
+    RequestHandler,
+    RouterHandler,
+    RouterRoutes,
+    RouteSchemas,
+    RoutesFromSchemas,
+} from '@crawlee/basic';
+import {
+    BasicCrawler,
+    ContextPipeline,
+    getCookiesFromResponse,
+    NavigationSkippedError,
+    skippedNavigationRequest,
+    remainingNavigationWindowMillis,
+    RequestState,
+    RequestThrottledError,
+    Router,
+    SessionError,
+} from '@crawlee/basic';
+import { ResponseWithUrl } from '@crawlee/http-client';
+import type { Awaitable, Dictionary, ISession } from '@crawlee/types';
+import { parseArgument, processHttpRequestOptions, RETRY_CSS_SELECTORS, schemas } from '@crawlee/utils/internal';
+import type { Cheerio, CheerioAPI } from 'cheerio';
+import type { AnyNode } from 'domhandler';
+import { isTypeValid, parse as parseContentType } from 'content-type';
+import iconv from 'iconv-lite';
+import type { JsonValue } from 'type-fest';
+import { z } from 'zod';
+
+import { addTimeoutToPromise, storage, TimeoutError, tryCancel } from '@apify/timeout';
+
+import { extractCharsetFromHtmlBytes, parseContentTypeFromResponse } from './utils.js';
+
+/**
+ * Default mime types, which HttpScraper supports.
+ */
+const HTML_AND_XML_MIME_TYPES = ['text/html', 'text/xml', 'application/xhtml+xml', 'application/xml'];
+const APPLICATION_JSON_MIME_TYPE = 'application/json';
+/**
+ * A higher starting concurrency and a relaxed event loop signal, since HTTP-only crawling barely touches the event
+ * loop. {@apilink HttpCrawler} folds these into the {@apilink ConcurrencySystem} it builds by default, with your own
+ * concurrency shortcuts (`minConcurrency`, `maxConcurrency`, `maxRequestsPerMinute`) kept on top.
+ *
+ * A {@apilink BasicCrawlerOptions.concurrencySystem|`concurrencySystem`} you supply yourself replaces that default
+ * wholesale, tuning included, so spread these options in if you want to keep it:
+ *
+ * ```typescript
+ * new ConcurrencySystem({ ...HTTP_OPTIMIZED_CONCURRENCY_SYSTEM_OPTIONS, maxConcurrency: 50 });
+ * ```
+ */
+export const HTTP_OPTIMIZED_CONCURRENCY_SYSTEM_OPTIONS: ConcurrencySystemOptions = {
+    desiredConcurrency: 10,
+    loadSignals: {
+        eventLoop: {
+            snapshotIntervalSecs: 2,
+            maxBlockedMillis: 100,
+            overloadedRatio: 0.7,
+        },
+    },
+};
+
+export type HttpErrorHandler<
+    UserData extends Dictionary = any, // with default to Dictionary we cant use a typed router in untyped crawler
+    JSONData extends JsonValue = any, // with default to Dictionary we cant use a typed router in untyped crawler
+    ContextExtension = Dictionary<never>,
+> = ErrorHandler<CrawlingContext, HttpCrawlingContext<UserData, JSONData> & ContextExtension>;
+
+export interface HttpCrawlerOptions<
+    Context extends InternalHttpCrawlingContext = InternalHttpCrawlingContext,
+    ContextExtension = Dictionary<never>,
+    ExtendedContext extends Context = Context & ContextExtension,
+    Routes extends Record<keyof Routes, Dictionary> = Record<string, GetUserDataFromRequest<Context['request']>>,
+    StatisticStateExtension extends object = {},
+> extends BasicCrawlerOptions<Context, ContextExtension, ExtendedContext, Routes, StatisticStateExtension> {
+    /**
+     * Timeout for the whole navigation phase, given in seconds. A single window shared by the
+     * `preNavigationHooks`, the navigation (the HTTP request to the resource), and the `postNavigationHooks` -
+     * so a slow hook eats into the same budget the navigation uses. Separate from the
+     * {@apilink BasicCrawlerOptions.requestHandlerTimeoutSecs|`requestHandlerTimeoutSecs`}, which times only the
+     * request handler.
+     */
+    navigationTimeoutSecs?: number;
+
+    /**
+     * If set to `true`, TLS/SSL certificate errors are ignored. Forwarded to the HTTP client as
+     * {@apilink SendRequestOptions.ignoreTlsErrors|`ignoreTlsErrors`} on every navigation request, so custom
+     * {@apilink BaseHttpClient} implementations should honor that flag (the built-in impit and got-scraping
+     * clients do; the native fetch fallback cannot disable TLS verification and warns instead).
+     *
+     * @default false
+     */
+    ignoreTlsErrors?: boolean;
+
+    /**
+     * Async functions that are sequentially evaluated before the navigation. Good for setting additional cookies
+     * or browser properties before navigation. The function accepts one parameter `crawlingContext`,
+     * which is passed to the `requestAsBrowser()` function the crawler calls to navigate.
+     *
+     * A hook may optionally return a partial object whose properties are merged into the crawling context,
+     * allowing the hook to override context members for subsequent hooks and pipeline stages.
+     *
+     * The context is built up in the following order: base context (`request`, `session`, helpers, ...) ->
+     * `extendContext` -> `preNavigationHooks` -> navigation -> `postNavigationHooks` -> `requestHandler`.
+     * This means the members added by `extendContext` are already available here, but navigation-dependent
+     * members (e.g. `response`, `body`, `$`) are not.
+     * Example:
+     * ```
+     * preNavigationHooks: [
+     *     async (crawlingContext) => {
+     *         // ...
+     *     },
+     * ]
+     * ```
+     */
+    preNavigationHooks?: InternalHttpHook<CrawlingContext<any>, ContextExtension>[];
+
+    /**
+     * Async functions that are sequentially evaluated after the navigation. Good for checking if the navigation was successful.
+     * The function accepts `crawlingContext` as the only parameter.
+     *
+     * A hook may optionally return a partial object whose properties are merged into the crawling context,
+     * which is useful for overriding the `response` after solving a challenge or re-fetching the resource.
+     * Example:
+     * ```
+     * postNavigationHooks: [
+     *     async (crawlingContext) => {
+     *         if (await needsRevalidation(crawlingContext)) {
+     *             return { response: await refetch(crawlingContext.request) };
+     *         }
+     *     },
+     * ]
+     * ```
+     */
+    postNavigationHooks?: InternalHttpHook<CrawlingContextWithResponse, ContextExtension>[];
+
+    /**
+     * An array of [MIME types](https://developer.mozilla.org/en-US/docs/Web/HTTP/Basics_of_HTTP/MIME_types/Complete_list_of_MIME_types)
+     * you want the crawler to load and process. By default, only `text/html`, `application/xhtml+xml`, `text/xml`, `application/xml`,
+     * and `application/json` MIME types are supported.
+     */
+    additionalMimeTypes?: string[];
+
+    /**
+     * By default this crawler will extract correct encoding from the HTTP response headers.
+     * Sadly, there are some websites which use invalid headers. Those are encoded using the UTF-8 encoding.
+     * If those sites actually use a different encoding, the response will be corrupted. You can use
+     * `suggestResponseEncoding` to fall back to a certain encoding, if you know that your target website uses it.
+     * To force a certain encoding, disregarding the response headers, use {@apilink HttpCrawlerOptions.forceResponseEncoding}
+     * ```
+     * // Will fall back to windows-1250 encoding if none found
+     * suggestResponseEncoding: 'windows-1250'
+     * ```
+     */
+    suggestResponseEncoding?: string;
+
+    /**
+     * By default this crawler will extract correct encoding from the HTTP response headers. Use `forceResponseEncoding`
+     * to force a certain encoding, disregarding the response headers.
+     * To only provide a default for missing encodings, use {@apilink HttpCrawlerOptions.suggestResponseEncoding}
+     * ```
+     * // Will force windows-1250 encoding even if headers say otherwise
+     * forceResponseEncoding: 'windows-1250'
+     * ```
+     */
+    forceResponseEncoding?: string;
+
+    /**
+     * Automatically saves cookies to Session. Enabled by default.
+     *
+     * It parses cookie from response "set-cookie" header saves or updates cookies for session and once the session is used for next request.
+     * It passes the "Cookie" header to the request with the session cookies.
+     */
+    saveResponseCookies?: boolean;
+}
+
+export type InternalHttpHook<Context, ContextExtension = {}> = (
+    crawlingContext: Context & ContextExtension,
+) => Awaitable<void | Partial<Context>>;
+
+interface CrawlingContextWithResponse<
+    UserData extends Dictionary = any, // with default to Dictionary we cant use a typed router in untyped crawler
+> extends CrawlingContext<UserData> {
+    /**
+     * The request object that was successfully loaded and navigated to, including the {@apilink Request.loadedUrl|`loadedUrl`} property.
+     */
+    request: LoadedRequest<CrawlingRequest<UserData>>;
+
+    /**
+     * The HTTP response object containing status code, headers, and other response metadata.
+     */
+    response: Response;
+}
+
+export interface InternalHttpCrawlingContext<
+    UserData extends Dictionary = any, // with default to Dictionary we cant use a typed router in untyped crawler
+    JSONData extends JsonValue = any, // with default to Dictionary we cant use a typed router in untyped crawler
+> extends CrawlingContextWithResponse<UserData> {
+    /**
+     * The request body of the web page.
+     * The type depends on the `Content-Type` header of the web page:
+     * - String for `text/html`, `application/xhtml+xml`, `application/xml` MIME content types
+     * - Buffer for others MIME content types
+     */
+    body: string | Buffer;
+
+    /**
+     * The parsed object from JSON string if the response contains the content type application/json.
+     */
+    json: JSONData;
+
+    /**
+     * Parsed `Content-Type header: { type, encoding }`.
+     */
+    contentType: { type: string; encoding: BufferEncoding };
+
+    /**
+     * Wait for an element matching the selector to appear.
+     *
+     * `HttpCrawler` and {@apilink CheerioCrawler} parse a response that is already fully downloaded, so there is
+     * nothing to wait for and `timeoutMs` is ignored. {@apilink JSDOMCrawler} and {@apilink LinkeDOMCrawler} poll for
+     * the selector instead, with `timeoutMs` defaulting to 5s.
+     *
+     * **Example usage:**
+     * ```ts
+     * async requestHandler({ waitForSelector, parseWithCheerio }) {
+     *     await waitForSelector('article h1');
+     *     const $ = await parseWithCheerio();
+     *     const title = $('title').text();
+     * });
+     * ```
+     */
+    waitForSelector(selector: string, timeoutMs?: number): Promise<void>;
+
+    /**
+     * Like {@apilink InternalHttpCrawlingContext.waitForSelector|`waitForSelector`}, but returns the matched
+     * elements - a Cheerio object here, whatever the parser produces in {@apilink DOMCrawler}. Throws when nothing
+     * matches.
+     */
+    querySelectorAll(selector: string, timeoutMs?: number): Promise<ArrayLike<unknown>>;
+
+    /**
+     * Like {@apilink InternalHttpCrawlingContext.querySelectorAll|`querySelectorAll`}, but returns only the first
+     * match.
+     */
+    querySelectorOne(selector: string, timeoutMs?: number): Promise<unknown>;
+
+    /**
+     * Returns Cheerio handle for `page.content()`, allowing to work with the data same way as with {@apilink CheerioCrawler}.
+     * This is here to unify the crawler API, so they all have this handy method - in {@apilink CheerioCrawler} it has
+     * the same return type as the `$` context property, so use it only if you are abstracting your workflow to
+     * support different context types in one handler.
+     *
+     * When provided with the `selector` argument, it will throw if it's not available. {@apilink JSDOMCrawler} and
+     * {@apilink LinkeDOMCrawler} wait for the selector first, with `timeoutMs` defaulting to 5s.
+     *
+     * **Example usage:**
+     * ```ts
+     * async requestHandler({ parseWithCheerio }) {
+     *     const $ = await parseWithCheerio();
+     *     const title = $('title').text();
+     * });
+     * ```
+     */
+    parseWithCheerio(selector?: string, timeoutMs?: number): Promise<CheerioAPI>;
+}
+
+export interface HttpCrawlingContext<
+    UserData extends Dictionary = any,
+    JSONData extends JsonValue = any,
+> extends InternalHttpCrawlingContext<UserData, JSONData> {
+    querySelectorAll(selector: string, timeoutMs?: number): Promise<Cheerio<AnyNode>>;
+    querySelectorOne(selector: string, timeoutMs?: number): Promise<Cheerio<AnyNode>>;
+}
+
+export type HttpRequestHandler<
+    UserData extends Dictionary = any, // with default to Dictionary we cant use a typed router in untyped crawler
+    JSONData extends JsonValue = any, // with default to Dictionary we cant use a typed router in untyped crawler
+> = RequestHandler<HttpCrawlingContext<UserData, JSONData>>;
+
+/**
+ * Provides a framework for the parallel crawling of web pages using plain HTTP requests.
+ * The URLs to crawl are fed either from a static list of URLs
+ * or from a dynamic queue of URLs enabling recursive crawling of websites.
+ *
+ * It is very fast and efficient on data bandwidth. However, if the target website requires JavaScript
+ * to display the content, you might need to use {@apilink PuppeteerCrawler} or {@apilink PlaywrightCrawler} instead,
+ * because it loads the pages using full-featured headless Chrome browser.
+ *
+ * This crawler downloads each URL using a plain HTTP request and doesn't do any HTML parsing.
+ *
+ * The source URLs are represented using {@apilink Request} objects that are fed from the
+ * {@apilink IRequestManager|request manager} provided via the {@apilink HttpCrawlerOptions.requestManager|`requestManager`}
+ * constructor option (a {@apilink RequestQueue} is itself a request manager). To read from a read-only source such
+ * as a {@apilink RequestList} while still being able to enqueue new requests, combine it with a queue into a
+ * {@apilink RequestManagerTandem} via {@apilink IRequestLoader.toTandem|`requestLoader.toTandem()`} and pass the
+ * result as `requestManager`.
+ *
+ * > The {@apilink HttpCrawlerOptions.requestList|`requestList`} and {@apilink HttpCrawlerOptions.requestQueue|`requestQueue`}
+ * > options are deprecated; they are still accepted and folded into a single `requestManager` for back-compat.
+ *
+ * The crawler finishes when there are no more {@apilink Request} objects to crawl.
+ *
+ * We can use the `preNavigationHooks` to adjust the crawling context before the request is made:
+ *
+ * ```javascript
+ * preNavigationHooks: [
+ *     (crawlingContext) => {
+ *         // ...
+ *     },
+ * ]
+ * ```
+ *
+ * By default, this crawler only processes web pages with the `text/html`, `application/xhtml+xml`, `text/xml`, `application/xml`,
+ * and `application/json` MIME content types (as reported by the `Content-Type` HTTP header),
+ * and skips pages with other content types. If you want the crawler to process other content types,
+ * use the {@apilink HttpCrawlerOptions.additionalMimeTypes} constructor option.
+ * Beware that the parsing behavior differs for HTML, XML, JSON and other types of content.
+ * For details, see {@apilink HttpCrawlerOptions.requestHandler}.
+ *
+ * New requests are only dispatched when there is enough free CPU and memory available, as judged by the crawler's
+ * {@apilink ConcurrencySystem}.
+ * Concurrency is tuned via the `minConcurrency`, `maxConcurrency` and `maxRequestsPerMinute` options of the
+ * constructor, or, for finer control, by injecting a pre-configured
+ * {@apilink ConcurrencySystem|`concurrencySystem`}.
+ *
+ * **Example usage:**
+ *
+ * ```javascript
+ * import { HttpCrawler, Dataset } from '@crawlee/http';
+ *
+ * const crawler = new HttpCrawler({
+ *     requestList,
+ *     async requestHandler({ request, response, body, contentType }) {
+ *         // Save the data to dataset.
+ *         await Dataset.pushData({
+ *             url: request.url,
+ *             html: body,
+ *         });
+ *     },
+ * });
+ *
+ * await crawler.run([
+ *     'http://www.example.com/page-1',
+ *     'http://www.example.com/page-2',
+ * ]);
+ * ```
+ * @category Crawlers
+ */
+export class HttpCrawler<
+    Context extends InternalHttpCrawlingContext<any, any> = InternalHttpCrawlingContext,
+    ContextExtension = Dictionary<never>,
+    ExtendedContext extends Context = Context & ContextExtension,
+    Routes extends Record<keyof Routes, Dictionary> = Record<string, GetUserDataFromRequest<Context['request']>>,
+    StatisticStateExtension extends object = {},
+> extends BasicCrawler<Context, ContextExtension, ExtendedContext, Routes, StatisticStateExtension> {
+    // Internal storage uses the base (non-extended) context types. The public option types are
+    // extension-aware for consumer DX, but internally the pipeline composes hooks against the
+    // concrete crawling context, which does not statically carry `ContextExtension`. The members
+    // added by `extendContext` are present at runtime regardless.
+    #preNavigationHooks: InternalHttpHook<CrawlingContext>[];
+    #postNavigationHooks: InternalHttpHook<CrawlingContextWithResponse>[];
+    #saveResponseCookies: boolean;
+    #navigationTimeoutMillis: number;
+    #ignoreTlsErrors: boolean;
+    #suggestResponseEncoding?: string;
+    #forceResponseEncoding?: string;
+    readonly #supportedMimeTypes: Set<string>;
+    readonly #downloadAbortControllers = new WeakMap<CrawlingRequest, AbortController>();
+
+    /**
+     * @internal
+     */
+    protected static override optionsShape = {
+        ...BasicCrawler.optionsShape,
+
+        navigationTimeoutSecs: schemas.anyNumber.default(30),
+        ignoreTlsErrors: z.boolean().default(false),
+        additionalMimeTypes: schemas.arrayOf(z.string(), 'strings').default(() => []),
+        suggestResponseEncoding: z.string().optional(),
+        forceResponseEncoding: z.string().optional(),
+        saveResponseCookies: z.boolean().default(true),
+
+        preNavigationHooks: schemas.anyArray.default(() => []),
+        postNavigationHooks: schemas.anyArray.default(() => []),
+    };
+
+    /** @internal */
+    protected static optionsSchema = z.strictObject(HttpCrawler.optionsShape);
+
+    /**
+     * All `HttpCrawlerOptions` parameters are passed via an options object.
+     */
+    constructor(
+        options: HttpCrawlerOptions<Context, ContextExtension, ExtendedContext, Routes, StatisticStateExtension> &
+            RequireContextPipeline<InternalHttpCrawlingContext, Context> = {} as any,
+    ) {
+        const {
+            navigationTimeoutSecs,
+            ignoreTlsErrors,
+            additionalMimeTypes,
+            suggestResponseEncoding,
+            forceResponseEncoding,
+            saveResponseCookies,
+            preNavigationHooks,
+            postNavigationHooks,
+
+            // BasicCrawler
+            contextPipelineBuilder,
+            ...basicCrawlerOptions
+        } = parseArgument(options, HttpCrawler.optionsSchema, 'HttpCrawlerOptions');
+
+        super({
+            ...basicCrawlerOptions,
+            contextPipelineBuilder:
+                contextPipelineBuilder ??
+                (() => this.buildContextPipeline() as ContextPipeline<CrawlingContext, Context>),
+        });
+
+        this.#supportedMimeTypes = new Set([...HTML_AND_XML_MIME_TYPES, APPLICATION_JSON_MIME_TYPE]);
+        if (additionalMimeTypes.length) this.#extendSupportedMimeTypes(additionalMimeTypes);
+
+        if (suggestResponseEncoding && forceResponseEncoding) {
+            this.log.warning(
+                'Both forceResponseEncoding and suggestResponseEncoding options are set. Using forceResponseEncoding.',
+            );
+        }
+
+        this.#navigationTimeoutMillis = navigationTimeoutSecs * 1000;
+        this.#ignoreTlsErrors = ignoreTlsErrors;
+        this.#suggestResponseEncoding = suggestResponseEncoding;
+        this.#forceResponseEncoding = forceResponseEncoding;
+        // Cast away the extension-aware option types to the base internal storage types (see the field
+        // declarations above). This is sound - the hooks only ever receive the base context plus the
+        // members `extendContext` added at runtime.
+        this.#preNavigationHooks = preNavigationHooks as InternalHttpHook<CrawlingContext>[];
+        this.#postNavigationHooks = [
+            ({ request, response }) => this.#abortDownloadOfBody(request, response!),
+            ...(postNavigationHooks as InternalHttpHook<CrawlingContextWithResponse>[]),
+        ];
+
+        this.#saveResponseCookies = saveResponseCookies;
+    }
+
+    /** @internal */
+    protected override getNavigationTimeoutMillis(): number {
+        return this.#navigationTimeoutMillis;
+    }
+
+    /** @internal */
+    protected override createDefaultConcurrencySystem(options: ConcurrencySystemOptions): ConcurrencySystem {
+        return super.createDefaultConcurrencySystem({
+            ...HTTP_OPTIMIZED_CONCURRENCY_SYSTEM_OPTIONS,
+            ...options,
+        });
+    }
+
+    protected buildContextPipeline(): ContextPipeline<CrawlingContext, InternalHttpCrawlingContext> {
+        // When navigation is skipped, `prepareHttpRequest` has already installed throwing getters for
+        // the response-derived members, so the guarded action is bypassed and the context left untouched.
+        const skipGuard =
+            <Ctx extends CrawlingContext, Ext>(
+                action: (ctx: Ctx) => Awaitable<void | Ext>,
+            ): ContextMiddleware<Ctx, Ext> =>
+            async (ctx) =>
+                (ctx.request.skipNavigation ? {} : ((await action(ctx)) ?? {})) as Ext;
+
+        // A single navigation window covers the pre-navigation hooks, the navigation, and the post-navigation
+        // hooks: the whole phase shares one `navigationTimeoutSecs` budget, so a slow hook eats into the same
+        // window the navigation uses instead of each step being timed on its own.
+        const navigationTimedOut = `Navigation timed out after ${this.#navigationTimeoutMillis / 1000} seconds.`;
+        const windowGuard = <Ctx extends CrawlingContext, Ext>(
+            step: (ctx: Ctx) => Awaitable<void | Ext>,
+        ): ContextMiddleware<Ctx, Ext> =>
+            skipGuard(async (ctx: Ctx) => {
+                const remaining = remainingNavigationWindowMillis(ctx, this.#navigationTimeoutMillis);
+                if (remaining <= 0) {
+                    throw new TimeoutError(navigationTimedOut);
+                }
+                return addTimeoutToPromise(async () => step(ctx), remaining, navigationTimedOut);
+            });
+
+        let pipeline = ContextPipeline.create<CrawlingContext>().compose(this.#prepareHttpRequest.bind(this));
+
+        for (const hook of this.#preNavigationHooks) {
+            pipeline = pipeline.compose(windowGuard(hook));
+        }
+
+        let pipelineWithNavigation = pipeline.compose(skipGuard(this.makeHttpRequest.bind(this)));
+
+        for (const hook of this.#postNavigationHooks) {
+            pipelineWithNavigation = pipelineWithNavigation.compose(windowGuard(hook));
+        }
+
+        return pipelineWithNavigation
+            .compose(this.#processHttpResponse.bind(this))
+            .compose(this.#handleBlockedRequestByContent.bind(this));
+    }
+
+    async #prepareHttpRequest(crawlingContext: CrawlingContext): Promise<Partial<CrawlingContextWithResponse>> {
+        const { request } = crawlingContext;
+
+        if (request.skipNavigation) {
+            return {
+                request: skippedNavigationRequest(request) as LoadedRequest<CrawlingRequest>,
+                get response(): InternalHttpCrawlingContext['response'] {
+                    throw new NavigationSkippedError(
+                        'The `response` property is not available - `skipNavigation` was used',
+                    );
+                },
+            } as Partial<CrawlingContextWithResponse>;
+        }
+
+        request.state = RequestState.BEFORE_NAV;
+        return {};
+    }
+
+    // oxlint-disable-next-line crawlee/prefer-private-fields -- patched by @crawlee/otel
+    private async makeHttpRequest(
+        crawlingContext: CrawlingContext,
+    ): Promise<Omit<CrawlingContextWithResponse, keyof CrawlingContext> & Partial<CrawlingContextWithResponse>> {
+        tryCancel();
+
+        const { request, session } = crawlingContext;
+        const proxyUrl = crawlingContext.proxyInfo?.url;
+
+        const downloadAbortController = new AbortController();
+        this.#downloadAbortControllers.set(request, downloadAbortController);
+
+        // Bound the request by whatever is left of the shared navigation window (the pre-navigation hooks may
+        // have already spent part of it), so it produces a clean navigation-timeout error rather than the raw
+        // client abort.
+        const httpResponse = await addTimeoutToPromise(
+            async () => this.#requestFunction({ request, session, proxyUrl, signal: downloadAbortController.signal }),
+            Math.max(1, remainingNavigationWindowMillis(crawlingContext, this.#navigationTimeoutMillis)),
+            `Navigation timed out after ${this.#navigationTimeoutMillis / 1000} seconds.`,
+        );
+        tryCancel();
+
+        request.loadedUrl = httpResponse?.url;
+        request.state = RequestState.AFTER_NAV;
+
+        return { request: request as LoadedRequest<CrawlingRequest>, response: httpResponse };
+    }
+
+    async #processHttpResponse(
+        crawlingContext: CrawlingContextWithResponse,
+    ): Promise<
+        Omit<InternalHttpCrawlingContext, keyof CrawlingContextWithResponse> & Partial<InternalHttpCrawlingContext>
+    > {
+        if (crawlingContext.request.skipNavigation) {
+            return {
+                get contentType(): InternalHttpCrawlingContext['contentType'] {
+                    throw new NavigationSkippedError(
+                        'The `contentType` property is not available - `skipNavigation` was used',
+                    );
+                },
+                get body(): InternalHttpCrawlingContext['body'] {
+                    throw new NavigationSkippedError(
+                        'The `body` property is not available - `skipNavigation` was used',
+                    );
+                },
+                get json(): InternalHttpCrawlingContext['json'] {
+                    throw new NavigationSkippedError(
+                        'The `json` property is not available - `skipNavigation` was used',
+                    );
+                },
+                get waitForSelector(): InternalHttpCrawlingContext['waitForSelector'] {
+                    throw new NavigationSkippedError(
+                        'The `waitForSelector` method is not available - `skipNavigation` was used',
+                    );
+                },
+                get parseWithCheerio(): InternalHttpCrawlingContext['parseWithCheerio'] {
+                    throw new NavigationSkippedError(
+                        'The `parseWithCheerio` method is not available - `skipNavigation` was used',
+                    );
+                },
+                get querySelectorAll(): InternalHttpCrawlingContext['querySelectorAll'] {
+                    throw new NavigationSkippedError(
+                        'The `querySelectorAll` method is not available - `skipNavigation` was used',
+                    );
+                },
+                get querySelectorOne(): InternalHttpCrawlingContext['querySelectorOne'] {
+                    throw new NavigationSkippedError(
+                        'The `querySelectorOne` method is not available - `skipNavigation` was used',
+                    );
+                },
+            };
+        }
+
+        tryCancel();
+
+        // Before `parseResponse`, which throws for error status codes - a 429 the user opted into treating as an
+        // error is still a rate limit the domain should back off from.
+        if (crawlingContext.response.status === 429) {
+            const retryAfter = crawlingContext.response.headers.get('retry-after');
+            if (this.recordDomainRateLimit(crawlingContext.request.url, retryAfter)) {
+                // This is the one path that never reads the body, so cancel it to release the connection
+                // rather than leaving it to the garbage collector.
+                await crawlingContext.response.body?.cancel().catch(() => {});
+                throw new RequestThrottledError(`${crawlingContext.request.url} responded with 429.`);
+            }
+        }
+
+        // Reading the body is still part of the navigation, so it draws from the same shared window: on a server
+        // that streams the body slowly the request completes (headers arrive) but the body read would otherwise
+        // run unbounded. `extendTimeout` from a post-navigation hook has already pushed this deadline out if asked.
+        const remaining = remainingNavigationWindowMillis(crawlingContext, this.#navigationTimeoutMillis);
+        if (remaining <= 0) {
+            throw new TimeoutError(`Navigation timed out after ${this.#navigationTimeoutMillis / 1000} seconds.`);
+        }
+        const parsed = await addTimeoutToPromise(
+            async () => this.#parseResponse(crawlingContext.request, crawlingContext.response),
+            remaining,
+            `Navigation timed out after ${this.#navigationTimeoutMillis / 1000} seconds.`,
+        ).catch((error) => {
+            // Stop the download along with the read, so a body that never ends doesn't outlive the request.
+            this.#downloadAbortControllers.get(crawlingContext.request)?.abort();
+            throw error;
+        });
+        tryCancel();
+        const response = parsed.response!;
+        const contentType = parsed.contentType!;
+
+        const loadBody = async () => {
+            const { load } = await import('cheerio/slim');
+
+            return load(parsed.body!.toString(), { xmlMode: contentType.type.includes('xml') });
+        };
+        const querySelectorAll = async (selector: string, _timeoutMs?: number) => {
+            const matches = (await loadBody())(selector);
+
+            if (matches.length === 0) {
+                throw new Error(`Selector '${selector}' not found.`);
+            }
+
+            return matches;
+        };
+        const querySelectorOne = async (selector: string, timeoutMs?: number) =>
+            (await querySelectorAll(selector, timeoutMs)).first();
+        const waitForSelector = async (selector: string, timeoutMs?: number) => {
+            await querySelectorAll(selector, timeoutMs);
+        };
+        const parseWithCheerio = async (selector?: string, timeoutMs?: number) => {
+            const $ = await loadBody();
+
+            if (selector) {
+                await (crawlingContext as InternalHttpCrawlingContext).waitForSelector(selector, timeoutMs);
+            }
+
+            return $;
+        };
+
+        this.throwOnBlockedRequest(response.status);
+
+        if (this.#saveResponseCookies) {
+            try {
+                for (const cookie of getCookiesFromResponse(response)) {
+                    if (!cookie) continue;
+                    try {
+                        await crawlingContext.session.cookieJar.setCookie(cookie, response.url, {
+                            ignoreError: false,
+                        });
+                    } catch (e) {
+                        this.log.debug(`Could not set cookie: ${(e as Error).message}`);
+                    }
+                }
+            } catch (e) {
+                this.log.exception(e as Error, 'Could not get cookies from response');
+            }
+        }
+
+        return {
+            get json() {
+                if (contentType.type !== APPLICATION_JSON_MIME_TYPE) return null;
+                const jsonString = parsed.body!.toString(contentType.encoding);
+                return JSON.parse(jsonString);
+            },
+            waitForSelector,
+            querySelectorOne,
+            querySelectorAll,
+            parseWithCheerio,
+            contentType,
+            body: parsed.body,
+        };
+    }
+
+    async #handleBlockedRequestByContent(crawlingContext: InternalHttpCrawlingContext): Promise<{}> {
+        if (this.retryOnBlocked) {
+            const error = await this.#isRequestBlocked(crawlingContext);
+            if (error) throw new SessionError(error);
+        }
+        return {};
+    }
+
+    async #isRequestBlocked(crawlingContext: InternalHttpCrawlingContext): Promise<string | false> {
+        if (HTML_AND_XML_MIME_TYPES.includes(crawlingContext.contentType.type)) {
+            const $ = await crawlingContext.parseWithCheerio();
+
+            const foundSelectors = RETRY_CSS_SELECTORS.filter((selector) => $(selector).length > 0);
+
+            if (foundSelectors.length > 0) {
+                return `Found selectors: ${foundSelectors.join(', ')}`;
+            }
+        }
+
+        if (this.blockedStatusCodes.has(crawlingContext.response.status!)) {
+            return `Blocked by status code ${crawlingContext.response.status}`;
+        }
+
+        return false;
+    }
+
+    /**
+     * Function to make the HTTP request. It performs optimizations
+     * on the request such as only downloading the request body if the
+     * received content type matches text/html, application/xml, application/xhtml+xml.
+     */
+    async #requestFunction({ request, session, proxyUrl, signal }: RequestFunctionOptions): Promise<Response> {
+        const opts = this.#getRequestOptions(request, proxyUrl);
+
+        try {
+            return await this.#requestAsBrowser(opts, session, signal);
+        } catch (e) {
+            if (e instanceof Error && e.constructor.name === 'TimeoutError') {
+                this.#handleRequestTimeout(session);
+                return new Response(); // this will never happen, as handleRequestTimeout always throws
+            }
+
+            if (this.isProxyError(e as Error)) {
+                throw new SessionError(this.getMessageFromError(e as Error));
+            } else {
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * Encodes and parses response according to the provided content type
+     */
+    async #parseResponse(request: CrawlingRequest, response: Response) {
+        const { status } = response;
+        const { type, charset } = parseContentTypeFromResponse(response);
+
+        if (status >= 400 && status <= 599) {
+            this.statistics.registerStatusCode(status);
+        }
+
+        if (this.isErrorStatusCode(status)) {
+            const { response: decoded } = this.#encodeResponse(request, response, charset);
+            const body = await decoded.text(); // TODO - this always uses UTF-8 (see https://developer.mozilla.org/en-US/docs/Web/API/Request/text)
+
+            // Errors are often sent as JSON, so attempt to parse them,
+            // despite Accept header being set to text/html.
+            if (type === APPLICATION_JSON_MIME_TYPE) {
+                const errorResponse = JSON.parse(body);
+                let { message } = errorResponse;
+                if (!message) message = util.inspect(errorResponse, { depth: 1, maxArrayLength: 10 });
+                throw new Error(`${status} - ${message}`);
+            }
+
+            if (this.additionalHttpErrorStatusCodes.has(status)) {
+                throw new Error(`${status} - Error status code was set by user.`);
+            }
+
+            // It's not a JSON, so it's probably some text. Get the first 100 chars of it.
+            throw new Error(`${status} - Internal Server Error: ${body.slice(0, 100)}`);
+        }
+
+        if (HTML_AND_XML_MIME_TYPES.includes(type) && !charset && !this.#forceResponseEncoding) {
+            // The charset comes from the document itself, so the raw bytes are what we need -
+            // decoding them through `encodeResponse` first would consume the body for nothing.
+            const rawBytes = Buffer.from(await response.arrayBuffer());
+            const metaCharset = extractCharsetFromHtmlBytes(rawBytes);
+            const charsetToUse = metaCharset ?? this.#suggestResponseEncoding ?? 'utf-8';
+            const body = iconv.encodingExists(charsetToUse)
+                ? iconv.decode(rawBytes, charsetToUse)
+                : rawBytes.toString('utf8');
+            return { response, contentType: { type, encoding: 'utf-8' as BufferEncoding }, body };
+        }
+
+        const { response: reencodedResponse, encoding } = this.#encodeResponse(request, response, charset);
+        const contentType = { type, encoding };
+
+        if (HTML_AND_XML_MIME_TYPES.includes(type)) {
+            return { response, contentType, body: await reencodedResponse.text() };
+        }
+
+        return {
+            body: Buffer.from(await reencodedResponse.bytes()),
+            response,
+            contentType,
+        };
+    }
+
+    /**
+     * Combines the provided `requestOptions` with mandatory (non-overridable) values.
+     */
+    #getRequestOptions(request: CrawlingRequest, proxyUrl?: string) {
+        const requestOptions = {
+            url: request.url,
+            method: request.method,
+            proxyUrl,
+            timeout: this.#navigationTimeoutMillis,
+            headers: request.headers,
+            body: undefined as string | undefined,
+        };
+
+        if (requestOptions.headers?.cookie || requestOptions.headers?.Cookie) {
+            requestOptions.headers!.Cookie = this.getCookieHeaderFromRequest(request);
+            delete requestOptions.headers!.cookie;
+        }
+
+        if (/PATCH|POST|PUT/.test(request.method)) requestOptions.body = request.payload ?? '';
+
+        return requestOptions;
+    }
+
+    #encodeResponse(
+        request: CrawlingRequest,
+        response: Response,
+        encoding: BufferEncoding,
+    ): {
+        encoding: BufferEncoding;
+        response: Response;
+    } {
+        if (this.#forceResponseEncoding) {
+            encoding = this.#forceResponseEncoding as BufferEncoding;
+        } else if (!encoding && this.#suggestResponseEncoding) {
+            encoding = this.#suggestResponseEncoding as BufferEncoding;
+        }
+
+        // Fall back to utf-8 if we still don't have encoding.
+        const utf8 = 'utf8';
+        if (!encoding) return { response, encoding: utf8 };
+
+        // This means that the encoding is one of Node.js supported
+        // encodings and we don't need to re-encode it.
+        if (Buffer.isEncoding(encoding)) return { response, encoding };
+
+        // Try to re-encode a variety of unsupported encodings to utf-8
+        if (iconv.encodingExists(encoding)) {
+            const encodeStream = iconv.encodeStream(utf8);
+            const decodeStream = iconv
+                .decodeStream(encoding)
+                .on('error', (err: Error) => encodeStream.emit('error', err));
+            const reencodedBody = response.body
+                ? Readable.toWeb(
+                      Readable.from(
+                          Readable.fromWeb(response.body as any)
+                              .pipe(decodeStream)
+                              .pipe(encodeStream),
+                      ),
+                  )
+                : null;
+
+            return {
+                response: new ResponseWithUrl(reencodedBody as any, response),
+                encoding: utf8,
+            };
+        }
+
+        throw new Error(`Resource ${request.url} served with unsupported charset/encoding: ${encoding}`);
+    }
+
+    /**
+     * Checks and extends supported mime types
+     */
+    #extendSupportedMimeTypes(additionalMimeTypes: string[]) {
+        for (const mimeType of additionalMimeTypes) {
+            if (mimeType === '*/*') {
+                this.#supportedMimeTypes.add(mimeType);
+                continue;
+            }
+
+            const parsedType = parseContentType(mimeType);
+            if (!isTypeValid(parsedType.type)) {
+                throw new Error(`Can not parse mime type ${mimeType} from "options.additionalMimeTypes".`);
+            }
+
+            this.#supportedMimeTypes.add(parsedType.type);
+        }
+    }
+
+    /**
+     * Handles timeout request
+     */
+    #handleRequestTimeout(session: ISession) {
+        session.markBad();
+        throw new Error(`Request timed out after ${this.#navigationTimeoutMillis / 1000} seconds.`);
+    }
+
+    #abortDownloadOfBody(request: CrawlingRequest, response: Response) {
+        const { status } = response;
+        const { type } = parseContentTypeFromResponse(response);
+
+        const isTransientContentType = status >= 500 || this.blockedStatusCodes.has(status);
+
+        if (!this.#supportedMimeTypes.has(type) && !this.#supportedMimeTypes.has('*/*') && !isTransientContentType) {
+            request.noRetry = true;
+            throw new Error(
+                `Resource ${request.url} served Content-Type ${type}, ` +
+                    `but only ${Array.from(this.#supportedMimeTypes).join(', ')} are allowed. Skipping resource.`,
+            );
+        }
+    }
+
+    /**
+     * @internal wraps public utility for mocking purposes
+     */
+    #requestAsBrowser = async (options: Dictionary<any>, session: ISession, signal: AbortSignal) => {
+        const opts = processHttpRequestOptions({
+            ...(options as any),
+            responseType: 'text',
+        });
+
+        // When saveResponseCookies is false, the response cookies must not mutate the
+        // session jar. Reads still go through the session (so session.setCookie() in pre-nav
+        // hooks keeps working) but a per-request clone is passed in so writes are discarded.
+        const cookieJar = this.#saveResponseCookies ? session.cookieJar : await session.cookieJar.clone();
+
+        // Bind the request to the shared navigation window instead of a fixed per-request timeout, so
+        // `extendTimeout()` can push the deadline and a fixed `AbortSignal.timeout` won't fire on its own and
+        // kill a lazily-read body mid-extension. The window's signal only covers the header phase; the body read is
+        // bounded separately (see `processHttpResponse`), which aborts `signal` when it fails, so a slow-streaming
+        // body still fails cleanly with a navigation timeout and its download stops too.
+        const cancelSignal = storage.getStore()?.cancelTask.signal;
+        const requestSignal = cancelSignal ? AbortSignal.any([cancelSignal, signal]) : signal;
+
+        const response = await this.httpClient.sendRequest(
+            new Request(opts.url, {
+                body: opts.body ? (Readable.toWeb(opts.body) as any) : undefined,
+                headers: new Headers(opts.headers),
+                method: opts.method,
+                // Node-specific option to make the request body work with streams
+                duplex: 'half',
+            } as RequestInit),
+            {
+                session,
+                cookieJar,
+                proxyUrl: opts.proxyUrl,
+                signal: requestSignal,
+                timeoutMillis: cancelSignal ? undefined : opts.timeout,
+                ignoreTlsErrors: this.#ignoreTlsErrors,
+            },
+        );
+
+        return response;
+    };
+}
+
+interface RequestFunctionOptions {
+    request: CrawlingRequest;
+    session: ISession;
+    proxyUrl?: string;
+    signal: AbortSignal;
+}
+
+/**
+ * Creates new {@apilink Router} instance that works based on request labels.
+ * This instance can then serve as a `requestHandler` of your {@apilink HttpCrawler}.
+ * Defaults to the {@apilink HttpCrawlingContext}.
+ *
+ * > Serves as a shortcut for using `Router.create<HttpCrawlingContext>()`.
+ *
+ * ```ts
+ * import { HttpCrawler, createHttpRouter } from 'crawlee';
+ *
+ * const router = createHttpRouter();
+ * router.addHandler('label-a', async (ctx) => {
+ *    ctx.log.info('...');
+ * });
+ * router.addDefaultHandler(async (ctx) => {
+ *    ctx.log.info('...');
+ * });
+ *
+ * const crawler = new HttpCrawler({
+ *     requestHandler: router,
+ * });
+ * await crawler.run();
+ * ```
+ */
+export function createHttpRouter<
+    Context extends HttpCrawlingContext = HttpCrawlingContext,
+    Routes extends Record<keyof Routes, Dictionary> = Record<string, GetUserDataFromRequest<Context['request']>>,
+>(routes?: RouterRoutes<Context, Routes>): RouterHandler<Context, Routes>;
+export function createHttpRouter<
+    Context extends HttpCrawlingContext = HttpCrawlingContext,
+    UserData extends Dictionary = GetUserDataFromRequest<Context['request']>,
+>(routes?: RouterRoutes<Context, Record<string, UserData>>): RouterHandler<Context, Record<string, UserData>>;
+export function createHttpRouter<
+    Context extends HttpCrawlingContext = HttpCrawlingContext,
+    const Schemas extends RouteSchemas = RouteSchemas,
+>(schemas: Schemas): RouterHandler<Context, RoutesFromSchemas<Schemas>>;
+export function createHttpRouter(routesOrSchemas?: any): any {
+    return Router.create(routesOrSchemas);
+}

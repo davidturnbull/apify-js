@@ -1,0 +1,22 @@
+{
+  "packages": [
+    "packages/*"
+  ],
+  "version": "3.18.1",
+  "command": {
+    "version": {
+      "conventionalCommits": true,
+      "createRelease": "github",
+      "message": "chore(release): %s"
+    },
+    "publish": {
+      "assets": []
+    }
+  },
+  "npmClient": "pnpm",
+  "useNx": false,
+  "ignoreChanges": [
+    "**/test/**",
+    "**/*.md"
+  ]
+}

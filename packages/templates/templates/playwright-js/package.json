@@ -1,0 +1,19 @@
+{
+    "name": "crawlee-playwright-js",
+    "version": "0.0.1",
+    "private": true,
+    "type": "module",
+    "description": "This is an example of a Crawlee project.",
+    "dependencies": {
+        "@crawlee/impit-client": "^4.0.0-rc.1",
+        "crawlee": "^4.0.0-rc.1",
+        "playwright": "1.65.0"
+    },
+    "scripts": {
+        "start": "node src/main.js",
+        "test": "echo \"Error: oops, the actor has no tests yet, sad!\" && exit 1",
+        "postinstall": "npx crawlee install-playwright-browsers"
+    },
+    "author": "It's not you it's me",
+    "license": "ISC"
+}

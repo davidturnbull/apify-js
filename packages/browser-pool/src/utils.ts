@@ -1,0 +1,63 @@
+import type { BrowserPlugin } from './abstract-classes/browser-plugin.js';
+import type { PlaywrightPlugin } from './playwright/playwright-plugin.js';
+import type { PuppeteerPlugin } from './puppeteer/puppeteer-plugin.js';
+
+export type UnwrapPromise<T> = T extends PromiseLike<infer R> ? UnwrapPromise<R> : T;
+
+export function noop(..._args: unknown[]): void {}
+
+/**
+ * Strips secrets from a URL so it can be safely included in logs and error messages. Removes userinfo
+ * credentials and the entire query string and fragment — remote browser services routinely carry tokens
+ * there (e.g. Browserless `?token=…`), and we can't tell which params are sensitive. Keeps the
+ * protocol, host, port, and path, which are enough to diagnose connection failures.
+ */
+export function sanitizeEndpointForLog(endpoint: string): string {
+    try {
+        const url = new URL(endpoint);
+        url.username = '';
+        url.password = '';
+        url.search = '';
+        url.hash = '';
+        return url.toString();
+    } catch {
+        return '<invalid URL>';
+    }
+}
+
+/**
+ * This is required when using optional dependencies.
+ * Importing a type gives `any`, but `Parameters<any>` gives `unknown[]` instead of `any`
+ */
+export type SafeParameters<T extends (...args: any) => any> = unknown[] extends Parameters<T> ? any : Parameters<T>;
+
+export type InferBrowserPluginArray<
+    // The original array input
+    Input extends readonly unknown[],
+    // The results of this type
+    Result extends BrowserPlugin[] = [],
+> = Input extends readonly [infer FirstValue, ...infer Rest] | [infer FirstValue, ...infer Rest] // If the input is a tuple or a readonly array (`[] as const`), get the first and the rest of the values
+    ? // If the first value is a PlaywrightPlugin
+      FirstValue extends PlaywrightPlugin
+        ? // Add it to the result, and continue parsing
+          InferBrowserPluginArray<Rest, [...Result, PlaywrightPlugin]>
+        : // Else if the first value is a PuppeteerPlugin
+          FirstValue extends PuppeteerPlugin
+          ? // Add it to the result, and continue parsing
+            InferBrowserPluginArray<Rest, [...Result, PuppeteerPlugin]>
+          : // Return never as it isn't a valid type
+            never
+    : // If there's no more inputs to parse
+      Input extends []
+      ? // Return the results
+        Result
+      : // If the input is a general array of elements (not a tuple), infer it's values type
+        Input extends readonly (infer U)[]
+        ? // If the values are a union of the plugins
+          [U] extends [PuppeteerPlugin | PlaywrightPlugin]
+            ? // Return an array of the union
+              U[]
+            : // Return never as it isn't a valid type
+              never
+        : // Return the result
+          Result;

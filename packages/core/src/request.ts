@@ -1,0 +1,504 @@
+import type { BinaryLike } from 'node:crypto';
+import crypto from 'node:crypto';
+
+import type { AllowedHttpMethods, Dictionary, RequestSchema } from '@crawlee/types';
+import type { EnqueueStrategy } from '@crawlee/utils';
+import type { IsEqual } from 'type-fest';
+import { z } from 'zod';
+
+import { cryptoRandomObjectId, normalizeUrl } from '@apify/utilities';
+
+import { serviceLocator } from './service-locator.js';
+import { snapshotValue } from './storages/transaction.js';
+import { parseArgument, schemas } from './validators.js';
+
+/** The `strategy` option accepted by {@apilink ExtractLinksOptions} and {@apilink EnqueueUrlsOptions}. */
+export type EnqueueStrategyOption = EnqueueStrategy | 'all' | 'same-domain' | 'same-hostname' | 'same-origin';
+
+/**
+ * What the constructor writes into `userData.__crawlee` from {@apilink RequestOptions}. The crawler layer owns
+ * the full shape (`CrawlingRequestData` in `@crawlee/basic`); this only types the writes made here.
+ */
+interface CrawleeRequestData {
+    skipNavigation?: boolean;
+    crawlDepth?: number;
+    sessionId?: string;
+    maxRetries?: number;
+    enqueueStrategy?: EnqueueStrategyOption;
+}
+
+// new properties on the Request object breaks serialization
+// Compiled once: every `Request` runs it, and the generated fast path skips zod's interpreter.
+const requestOptionsSchema = z.compile(
+    z.looseObject({
+        url: z.string(),
+        uniqueKey: z.string().optional(),
+        method: z.string().optional(),
+        payload: z.union([z.string(), z.instanceof(Uint8Array)]).optional(),
+        noRetry: z.boolean().optional(),
+        sessionId: z.string().optional(),
+        maxRetries: schemas.anyNumber.optional(),
+        headers: z.looseObject({}).optional(),
+        userData: z.looseObject({}).optional(),
+        label: z.string().optional(),
+        keepUrlFragment: z.boolean().optional(),
+        useExtendedUniqueKey: z.boolean().optional(),
+        alwaysEnqueue: z.boolean().optional(),
+        skipNavigation: z.boolean().optional(),
+        crawlDepth: schemas.anyNumber
+            .refine((value) => value >= 0, 'Expected a number greater than or equal to 0')
+            .optional(),
+    }),
+);
+
+/** Storages return `null` for fields left unset by other clients, e.g. the Python SDK. */
+const unset = <T extends z.ZodType>(schema: T) => schema.nullish().transform((value) => value ?? undefined);
+
+/** A request as storages return it. Accepts no less than the constructor does for the same fields. */
+const storedRequestSchema = z.compile(
+    z.object({
+        id: z.string().optional(),
+        url: z.string(),
+        uniqueKey: z.string(),
+        method: z.custom<AllowedHttpMethods>((value) => typeof value === 'string').optional(),
+        payload: unset(z.custom<string>((value) => typeof value === 'string' || value instanceof Uint8Array)),
+        noRetry: unset(z.boolean()),
+        retryCount: z.number().optional(),
+        // Entries are not checked, persisted requests can hold `null`s there (#4087).
+        errorMessages: unset(z.custom<string[]>(Array.isArray)),
+        headers: unset(z.custom<Dictionary<string>>((value) => typeof value === 'object' && value !== null)),
+        userData: schemas.anyObject.optional(),
+        // `apify-client` parses `*At` fields into `Date`s, whatever the schema says.
+        handledAt: unset(z.custom<string>((value) => typeof value === 'string' || value instanceof Date)),
+        loadedUrl: unset(z.string()),
+    }),
+);
+
+// `@crawlee/types` cannot depend on `zod`, so this keeps `RequestSchema` in sync with the schema above.
+true satisfies IsEqual<z.input<typeof storedRequestSchema>, RequestSchema>;
+
+/**
+ * Represents a URL to be crawled, optionally including HTTP method, headers, payload and other metadata, together
+ * with the processing state a request queue keeps about it (`retryCount`, `errorMessages`, `handledAt`, ...).
+ * Inside a crawler, requests are {@apilink CrawlingRequest}s, which add the crawler's own per-request settings.
+ *
+ * Each `Request` instance has the `uniqueKey` property, which can be either specified
+ * manually in the constructor or generated automatically from the URL. Two requests with the same `uniqueKey`
+ * are considered as pointing to the same web resource. This behavior applies to all Crawlee classes,
+ * such as {@apilink RequestList}, {@apilink RequestQueue}, {@apilink PuppeteerCrawler} or {@apilink PlaywrightCrawler}.
+ *
+ * > To access and examine the actual request sent over http, with all autofilled headers you can access
+ * `response.request` object from the request handler
+ *
+ * Example use:
+ *
+ * ```javascript
+ * const request = new Request({
+ *     url: 'http://www.example.com',
+ *     headers: { Accept: 'application/json' },
+ *     userData: { foo: 'bar' },
+ * });
+ *
+ * await requestQueue.addRequest(request);
+ * ```
+ * @category Sources
+ */
+class CrawleeRequest<UserData extends Dictionary = Dictionary> {
+    /** Storage-assigned request ID. Only present on requests that went through a {@apilink RequestQueue}. */
+    id?: string;
+
+    /** URL of the web page to crawl. */
+    url: string;
+
+    /**
+     * An actually loaded URL after redirects, if present. HTTP redirects are guaranteed
+     * to be included.
+     *
+     * When using {@apilink PuppeteerCrawler} or {@apilink PlaywrightCrawler}, meta tag and JavaScript redirects may,
+     * or may not be included, depending on their nature. This generally means that redirects,
+     * which happen immediately will most likely be included, but delayed redirects will not.
+     */
+    loadedUrl?: string;
+
+    /**
+     * A unique key identifying the request.
+     * Two requests with the same `uniqueKey` are considered as pointing to the same URL.
+     */
+    uniqueKey: string;
+
+    /** HTTP method, e.g. `GET` or `POST`. */
+    method: AllowedHttpMethods;
+
+    /** HTTP request payload, e.g. for POST requests. */
+    payload?: string;
+
+    /** The `true` value indicates that the request will not be automatically retried on error. */
+    noRetry: boolean;
+
+    /** Indicates the number of times the crawling of the request has been retried on error. */
+    retryCount: number;
+
+    /** An array of error messages from request processing. */
+    errorMessages: string[];
+
+    /** Object with HTTP headers. Key is header name, value is the value. */
+    headers?: Record<string, string>;
+
+    /** Private store for the custom user data assigned to the request. */
+    #userData: Record<string, any> = {};
+
+    /**
+     * Custom user data assigned to the request.
+     *
+     * All data stored in `userData` must be JSON-serializable.
+     * Storing non-serializable values (e.g. functions, symbols) may result in unexpected results.
+     */
+    userData: UserData = {} as UserData;
+
+    /**
+     * ISO datetime string that indicates the time when the request has been processed.
+     * Is `null` if the request has not been crawled yet.
+     */
+    handledAt?: string;
+
+    /**
+     * `Request` parameters including the URL, HTTP method and headers, and others.
+     *
+     * Processing state (`retryCount`, `errorMessages`, `handledAt`, `loadedUrl`, `id`) is not an option;
+     * requests coming back from a storage are rebuilt with {@apilink Request.fromSchema}.
+     */
+    constructor(options: RequestOptions<UserData>) {
+        // A bare URL is a common slip — point at the object form instead of a generic type error.
+        if (typeof options === 'string') {
+            throw new TypeError(
+                `\`Request\` options must be an object, got the string '${options}'. ` +
+                    'Did you mean `new Request({ url })`?',
+            );
+        }
+
+        parseArgument(options, schemas.anyObject, 'RequestOptions');
+        parseArgument(options, requestOptionsSchema, 'RequestOptions');
+
+        const {
+            url,
+            uniqueKey,
+            payload,
+            noRetry = false,
+            sessionId,
+            maxRetries,
+            headers = {},
+            userData = {} as UserData,
+            label,
+            keepUrlFragment = false,
+            useExtendedUniqueKey = false,
+            alwaysEnqueue = false,
+            skipNavigation,
+            enqueueStrategy,
+            crawlDepth,
+        } = options;
+
+        let { method = 'GET' } = options;
+
+        method = method.toUpperCase() as AllowedHttpMethods;
+
+        if (method === 'GET' && payload) throw new Error('Request with GET method cannot have a payload.');
+
+        if (uniqueKey && alwaysEnqueue) {
+            throw new Error('`alwaysEnqueue` cannot be used together with a custom `uniqueKey`.');
+        }
+
+        this.url = url;
+        this.uniqueKey =
+            uniqueKey ||
+            CrawleeRequest.computeUniqueKey({
+                url,
+                method,
+                payload,
+                keepUrlFragment,
+                useExtendedUniqueKey,
+                alwaysEnqueue,
+            });
+        this.method = method;
+        this.payload = payload;
+        this.noRetry = noRetry;
+        this.retryCount = 0;
+        this.errorMessages = [];
+        this.headers = { ...headers };
+
+        if (label) {
+            (userData as Dictionary).label = label;
+        }
+
+        // Read `__crawlee` explicitly - on a `userData` coming from another Request instance the
+        // bag is non-enumerable, so the spread alone would silently drop the internal state
+        // (e.g. `skipNavigation`) when a request is re-wrapped after a storage round trip.
+        this.#userData = {
+            ...snapshotValue(userData),
+            __crawlee: snapshotValue((userData as Dictionary).__crawlee ?? {}),
+        };
+
+        // `userData` must stay an enumerable own accessor — serialization in the storages relies on it
+        Object.defineProperties(this, {
+            userData: {
+                get: () => this.#userData,
+                set: (value: Record<string, any>) => {
+                    Object.defineProperties(value, {
+                        __crawlee: {
+                            value: this.#userData.__crawlee,
+                            enumerable: false,
+                            writable: true,
+                        },
+                        toJSON: {
+                            value: () => {
+                                if (Object.keys(this.#userData.__crawlee).length > 0) {
+                                    return {
+                                        ...this.#userData,
+                                        __crawlee: this.#userData.__crawlee,
+                                    };
+                                }
+
+                                return this.#userData;
+                            },
+                            enumerable: false,
+                            writable: true,
+                        },
+                    });
+                    this.#userData = value;
+                },
+                enumerable: true,
+            },
+        });
+
+        // reassign the copy, not the possibly shared `userData`, so that internal `__crawlee` object is non-enumerable
+        this.userData = this.#userData as UserData;
+
+        const crawlee: CrawleeRequestData = ((this.userData as Dictionary).__crawlee ??= {});
+        if (skipNavigation != null) crawlee.skipNavigation = skipNavigation;
+        if (maxRetries != null) crawlee.maxRetries = maxRetries;
+        if (crawlDepth != null) crawlee.crawlDepth ??= crawlDepth;
+        if (sessionId) crawlee.sessionId = sessionId;
+        // A stored request keeps the strategy it was enqueued under.
+        if (enqueueStrategy) crawlee.enqueueStrategy ??= enqueueStrategy;
+    }
+
+    /**
+     * Rebuilds a request from its stored form, including the processing state a
+     * {@apilink RequestOptions} object cannot carry. Subclasses get instances of themselves.
+     */
+    static fromSchema<UserData extends Dictionary = Dictionary>(schema: RequestSchema): CrawleeRequest<UserData> {
+        const stored = parseArgument(schema, storedRequestSchema, 'RequestSchema');
+        const { id, retryCount = 0, errorMessages = [], handledAt, loadedUrl, ...options } = stored;
+        const request = new this(options as RequestOptions<UserData>);
+        request.id = id;
+        request.retryCount = retryCount;
+        request.errorMessages = [...errorMessages];
+        request.loadedUrl = loadedUrl;
+        request.handledAt =
+            (handledAt as unknown) instanceof Date ? (handledAt as unknown as Date).toISOString() : handledAt;
+        return request;
+    }
+
+    /**
+     * Converts the Crawlee Request object to a `fetch` API Request object.
+     * @returns The native `fetch` API Request object.
+     */
+    public intoFetchAPIRequest(): Request {
+        return new Request(this.url, {
+            method: this.method,
+            headers: this.headers,
+            body: this.payload,
+        });
+    }
+
+    /** shortcut for getting `request.userData.label` */
+    get label(): string | undefined {
+        return this.userData.label;
+    }
+
+    /** shortcut for setting `request.userData.label` */
+    set label(value: string | undefined) {
+        (this.userData as Dictionary).label = value;
+    }
+
+    /** @internal */
+    static computeUniqueKey({
+        url,
+        method = 'GET',
+        payload,
+        keepUrlFragment = false,
+        useExtendedUniqueKey = false,
+        alwaysEnqueue = false,
+    }: ComputeUniqueKeyOptions) {
+        const normalizedMethod = method.toUpperCase();
+        const normalizedUrl = normalizeUrl(url, keepUrlFragment) || url; // It returns null when url is invalid, causing weird errors.
+
+        let uniqueKey: string;
+
+        if (!useExtendedUniqueKey) {
+            if (normalizedMethod !== 'GET' && payload) {
+                serviceLocator
+                    .getLogger()
+                    .warningOnce(
+                        `We've encountered a ${normalizedMethod} Request with a payload. ` +
+                            'This is fine. Just letting you know that if your requests point to the same URL ' +
+                            'and differ only in method and payload, you should see the "useExtendedUniqueKey" option of Request constructor.',
+                    );
+            }
+            uniqueKey = normalizedUrl;
+        } else {
+            const payloadHash = payload ? CrawleeRequest.hashPayload(payload) : '';
+            uniqueKey = `${normalizedMethod}|${payloadHash}|${normalizedUrl}`;
+        }
+
+        if (alwaysEnqueue) {
+            uniqueKey = `${cryptoRandomObjectId(17)}|${uniqueKey}`;
+        }
+
+        return uniqueKey;
+    }
+
+    /** @internal */
+    static hashPayload(payload: BinaryLike): string {
+        return crypto.createHash('sha256').update(payload).digest('base64').replace(/[+/=]/g, '').substring(0, 8);
+    }
+}
+
+/**
+ * Specifies required and optional fields for constructing a {@apilink Request}.
+ */
+export interface RequestOptions<UserData extends Dictionary = Dictionary> {
+    /** URL of the web page to crawl. It must be a non-empty string. */
+    url: string;
+
+    /**
+     * A unique key identifying the request.
+     * Two requests with the same `uniqueKey` are considered as pointing to the same URL.
+     *
+     * If `uniqueKey` is not provided, then it is automatically generated by normalizing the URL.
+     * For example, the URL of `HTTP://www.EXAMPLE.com/something/` will produce the `uniqueKey`
+     * of `http://www.example.com/something`.
+     *
+     * The `keepUrlFragment` option determines whether URL hash fragment is included in the `uniqueKey` or not.
+     *
+     * The `useExtendedUniqueKey` options determines whether method and payload are included in the `uniqueKey`,
+     * producing a `uniqueKey` in the following format: `METHOD|payloadHash|normalizedUrl`. This is useful
+     * when requests point to the same URL, but with different methods and payloads. For example: form submits.
+     *
+     * Pass an arbitrary non-empty text value to the `uniqueKey` property
+     * to override the default behavior and specify which URLs shall be considered equal.
+     */
+    uniqueKey?: string;
+
+    /** @default 'GET' */
+    method?: AllowedHttpMethods | Lowercase<AllowedHttpMethods>;
+
+    /** HTTP request payload, e.g. for POST requests. */
+    payload?: string;
+
+    /**
+     * HTTP headers in the following format:
+     * ```
+     * {
+     *     Accept: 'text/html',
+     *     'Content-Type': 'application/json'
+     * }
+     * ```
+     */
+    headers?: Record<string, string>;
+
+    /**
+     * Custom user data assigned to the request. Use this to save any request related data to the
+     * request's scope, keeping them accessible on retries, failures etc.
+     *
+     * All data stored in `userData` must be JSON-serializable.
+     * Storing non-serializable values (e.g. functions, symbols) may result in unexpected results.
+     */
+    userData?: UserData;
+
+    /**
+     * Shortcut for setting `userData: { label: '...' }`.
+     */
+    label?: string;
+
+    /**
+     * If `false` then the hash part of a URL is removed when computing the `uniqueKey` property.
+     * For example, this causes the `http://www.example.com#foo` and `http://www.example.com#bar` URLs
+     * to have the same `uniqueKey` of `http://www.example.com` and thus the URLs are considered equal.
+     * Note that this option only has an effect if `uniqueKey` is not set.
+     * @default false
+     */
+    keepUrlFragment?: boolean;
+
+    /**
+     * If `true` then the `uniqueKey` is computed not only from the URL, but also from the method and payload
+     * properties. This is useful when making requests to the same URL that are differentiated by method
+     * or payload, such as form submit navigations in browsers.
+     * @default false
+     */
+    useExtendedUniqueKey?: boolean;
+
+    /**
+     * If `true` then a random value is included in the `uniqueKey` computation, ensuring the request
+     * is always enqueued even if a request with the same URL (and method/payload) is already present
+     * in the queue. Cannot be used together with a custom `uniqueKey`.
+     * @default false
+     */
+    alwaysEnqueue?: boolean;
+
+    /**
+     * The `true` value indicates that the request will not be automatically retried on error.
+     * @default false
+     */
+    noRetry?: boolean;
+
+    /**
+     * ID of a session from the crawler's `SessionPool` to use for this request.
+     * When set, the crawler will fetch this session from the pool instead of creating a new one.
+     */
+    sessionId?: string;
+
+    /**
+     * If set to `true` then the crawler processing this request evaluates
+     * the `requestHandler` immediately without prior browser navigation.
+     *
+     * When enabled, the crawling context will not contain the results of the navigation
+     * (e.g. `response`, `body`, `contentType`, `$` or `request.loadedUrl`).
+     * Accessing these properties will throw a {@apilink NavigationSkippedError} at runtime.
+     * @default false
+     */
+    skipNavigation?: boolean;
+
+    /**
+     * Depth of the request in the current crawl tree.
+     * Note that this is dependent on the crawler setup and might produce unexpected results when used with multiple crawlers.
+     * @default 0
+     */
+    crawlDepth?: number;
+
+    /**
+     * Maximum number of retries for this request. Allows to override the global `maxRequestRetries` option of `BasicCrawler`.
+     */
+    maxRetries?: number;
+
+    /** @internal */
+    enqueueStrategy?: EnqueueStrategyOption;
+}
+
+interface ComputeUniqueKeyOptions {
+    url: string;
+    method: AllowedHttpMethods;
+    payload?: string | Buffer;
+    keepUrlFragment?: boolean;
+    useExtendedUniqueKey?: boolean;
+    alwaysEnqueue?: boolean;
+}
+
+export type Source = (Partial<RequestOptions> & { requestsFromUrl?: string; regex?: RegExp }) | CrawleeRequest;
+
+/** @internal */
+export interface InternalSource {
+    requestsFromUrl: string;
+    regex?: RegExp;
+}
+
+export { CrawleeRequest as Request };

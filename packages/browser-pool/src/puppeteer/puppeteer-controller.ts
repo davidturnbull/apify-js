@@ -1,0 +1,165 @@
+import type { Cookie } from '@crawlee/types';
+import type Puppeteer from 'puppeteer';
+import type * as PuppeteerTypes from 'puppeteer';
+
+import { tryCancel } from '@apify/timeout';
+
+import { BrowserController } from '../abstract-classes/browser-controller.js';
+import { anonymizeProxySugar } from '../anonymize-proxy.js';
+
+export interface PuppeteerNewPageOptions extends PuppeteerTypes.BrowserContextOptions {
+    proxyUsername?: string;
+    proxyPassword?: string;
+}
+
+const PROCESS_KILL_TIMEOUT_MILLIS = 5000;
+
+export class PuppeteerController extends BrowserController<
+    typeof Puppeteer,
+    PuppeteerTypes.LaunchOptions,
+    PuppeteerTypes.Browser,
+    PuppeteerNewPageOptions
+> {
+    /** @internal */
+    normalizeProxyOptions(proxyUrl: string | undefined, pageOptions: any): Record<string, unknown> {
+        if (!proxyUrl) {
+            return {};
+        }
+
+        const url = new URL(proxyUrl);
+        const username = decodeURIComponent(url.username);
+        const password = decodeURIComponent(url.password);
+
+        return {
+            proxyServer: `${url.protocol}//${url.host}`,
+            proxyUsername: username,
+            proxyPassword: password,
+            proxyBypassList: pageOptions?.proxyBypassList,
+        };
+    }
+
+    protected async _newPage(contextOptions?: PuppeteerNewPageOptions): Promise<PuppeteerTypes.Page> {
+        if (contextOptions !== undefined) {
+            if (!this.launchContext.useIncognitoPages) {
+                throw new Error('A new page can be created with provided context only when using incognito pages.');
+            }
+
+            let close = async () => {};
+            if (contextOptions.proxyServer) {
+                const [anonymizedProxyUrl, closeProxy] = await anonymizeProxySugar(
+                    contextOptions.proxyServer,
+                    contextOptions.proxyUsername,
+                    contextOptions.proxyPassword,
+                    { ignoreProxyCertificate: this.launchContext.ignoreProxyCertificate },
+                );
+
+                if (anonymizedProxyUrl) {
+                    contextOptions.proxyServer = anonymizedProxyUrl;
+                    delete contextOptions.proxyUsername;
+                    delete contextOptions.proxyPassword;
+                }
+
+                close = closeProxy;
+            }
+
+            try {
+                // @ts-expect-error not exposed on type level
+                const { CdpBrowser } = await import('puppeteer');
+                const oldPuppeteerVersion = !CdpBrowser || 'createIncognitoBrowserContext' in CdpBrowser.prototype;
+                const method = oldPuppeteerVersion ? 'createIncognitoBrowserContext' : 'createBrowserContext';
+                const context = (await (this.browser as any)[method](contextOptions)) as PuppeteerTypes.BrowserContext;
+                tryCancel();
+                const page = await context.newPage();
+                tryCancel();
+
+                /*
+                // DO NOT USE YET! DOING SO DISABLES CACHE WHICH IS 50% PERFORMANCE HIT!
+                if (contextOptions.proxyUsername || contextOptions.proxyPassword) {
+                    await page.authenticate({
+                        username: contextOptions.proxyUsername ?? '',
+                        password: contextOptions.proxyPassword ?? '',
+                    });
+                    tryCancel();
+                }
+                */
+
+                this.registerPageTeardown(page, async () => {
+                    // The proxy server is not chained behind the context close: that can hang on
+                    // the same target the page hung on, and the proxy runs in this process, so it
+                    // has to be reclaimed either way.
+                    const contextClosed = context.close().catch((error: any) => {
+                        this.log.exception(error, 'Failed to close context.');
+                    });
+
+                    await close();
+                    await contextClosed;
+                });
+
+                page.once('close', () => {
+                    this.registerPageClosed(page);
+                });
+
+                return page;
+            } catch (error) {
+                await close();
+
+                throw error;
+            }
+        }
+
+        const page = await this.browser.newPage();
+        tryCancel();
+
+        page.once('close', () => {
+            this.registerPageClosed(page);
+        });
+
+        return page;
+    }
+
+    protected async _close(): Promise<void> {
+        await this.browser.close();
+    }
+
+    protected async _kill(): Promise<void> {
+        const browserProcess = this.browser.process();
+
+        if (!browserProcess) {
+            this.log.debug('Browser was connected using the `puppeteer.connect` method no browser to kill.');
+            return;
+        }
+
+        const timeout = setTimeout(() => {
+            // This is here because users reported that it happened
+            // that error `TypeError: Cannot read property 'kill' of null` was thrown.
+            // Likely Chrome process wasn't started due to some error ...
+            browserProcess?.kill('SIGKILL');
+        }, PROCESS_KILL_TIMEOUT_MILLIS);
+
+        try {
+            await this.browser.close();
+            clearTimeout(timeout);
+        } catch (error) {
+            this.log.debug('Browser was already killed.', { error });
+        }
+    }
+
+    protected async _getCookies(page: PuppeteerTypes.Page): Promise<Cookie[]> {
+        const cookies = await page.browserContext().cookies();
+        // Puppeteer 25+ can report `sameSite: 'Default'`, which means the attribute is unspecified.
+        return cookies.map(({ sameSite, ...rest }) => ({
+            ...rest,
+            sameSite: (sameSite as string | undefined) === 'Default' ? undefined : (sameSite as Cookie['sameSite']),
+        }));
+    }
+
+    protected async _setCookies(page: PuppeteerTypes.Page, cookies: Cookie[]): Promise<void> {
+        // BrowserContext.setCookie requires `url` or `domain`; the page-level API used to back-fill
+        // the page's current URL for us. Replicate that so callers who pass neither don't get rejected.
+        const pageUrl = page.url();
+        const normalized = cookies.map((cookie) =>
+            cookie.url || cookie.domain ? cookie : { ...cookie, url: pageUrl },
+        );
+        return page.browserContext().setCookie(...(normalized as PuppeteerTypes.CookieData[]));
+    }
+}

@@ -1,0 +1,156 @@
+import { htmlToText } from '@crawlee/utils';
+import type { CheerioAPI } from 'cheerio';
+import * as cheerio from 'cheerio';
+
+import * as htmlToTextData from '../shared/data/html-to-text-test-data.js';
+
+const checkHtmlToText = async (html: string | CheerioAPI, expectedText: string, hasBody = false) => {
+    const text1 = await htmlToText(html);
+    expect(text1).toEqual(expectedText);
+
+    // Test embedding into <body> gives the same result
+    if (typeof html === 'string' && !hasBody) {
+        const html2 = `
+        <html>
+            <head>
+                <title>Title should be ignored</title>
+                <style>
+                    .styles_should_be_ignored_too {}
+                </style>
+                <script type="application/javascript">
+                    scriptsShouldBeIgnoredToo();
+                </script>
+            </head>
+            <body>
+                ${html}
+            </body>
+        </html>`;
+        const text2 = await htmlToText(html2);
+        expect(text2).toEqual(expectedText);
+    }
+};
+
+describe('htmlToText()', () => {
+    test('handles invalid args', async () => {
+        // @ts-expect-error invalid input type
+        await checkHtmlToText(null, '');
+        await checkHtmlToText('', '');
+        // @ts-expect-error invalid input type
+        await checkHtmlToText(0, '');
+        // @ts-expect-error invalid input type
+        await checkHtmlToText(undefined, '');
+    });
+
+    test('handles basic HTML elements correctly', async () => {
+        await checkHtmlToText('Plain text node', 'Plain text node');
+        await checkHtmlToText('   Plain    text     node    ', 'Plain text node');
+        await checkHtmlToText('   \nPlain    text     node  \n  ', 'Plain text node');
+
+        await checkHtmlToText('<h1>Header 1</h1> <h2>Header 2</h2>', 'Header 1\nHeader 2');
+        await checkHtmlToText('<h1>Header 1</h1> <h2>Header 2</h2><br>', 'Header 1\nHeader 2');
+        await checkHtmlToText('<h1>Header 1</h1> <h2>Header 2</h2><br><br>', 'Header 1\nHeader 2');
+        await checkHtmlToText('<h1>Header 1</h1> <h2>Header 2</h2><br><br><br>', 'Header 1\nHeader 2');
+
+        await checkHtmlToText('<h1>Header 1</h1><br><h2>Header 2</h2><br><br><br>', 'Header 1\n\nHeader 2');
+        await checkHtmlToText('<h1>Header 1</h1> <br> <h2>Header 2</h2><br><br><br>', 'Header 1\n\nHeader 2');
+        await checkHtmlToText('<h1>Header 1</h1>  \n <br>\n<h2>Header 2</h2><br><br><br>', 'Header 1\n\nHeader 2');
+        await checkHtmlToText(
+            '<h1>Header 1</h1>  \n <br>\n<br><h2>Header 2</h2><br><br><br>',
+            'Header 1\n\n\nHeader 2',
+        );
+        await checkHtmlToText(
+            '<h1>Header 1</h1>  \n <br>\n<br><br><h2>Header 2</h2><br><br><br>',
+            'Header 1\n\n\n\nHeader 2',
+        );
+
+        await checkHtmlToText('<div><div>Div</div><p>Paragraph</p></div>', 'Div\nParagraph');
+        await checkHtmlToText('<div>Div1</div><!-- Some comments --><div>Div2</div>', 'Div1\nDiv2');
+
+        await checkHtmlToText('<div>Div1</div><style>Skip styles</style>', 'Div1');
+        await checkHtmlToText('<script>Skip_scripts();</script><div>Div1</div>', 'Div1');
+        await checkHtmlToText('<SCRIPT>Skip_scripts();</SCRIPT><div>Div1</div>', 'Div1');
+        await checkHtmlToText('<svg>Skip svg</svg><div>Div1</div>', 'Div1');
+        await checkHtmlToText('<canvas>Skip canvas</canvas><div>Div1</div>', 'Div1');
+        await checkHtmlToText('<template><div>Skip {{ template }}</div></template><div>Div1</div>', 'Div1');
+        await checkHtmlToText(
+            '<ul><template x-for="item in items"><li x-text="item.name">Placeholder</li></template><li>Item 1</li></ul>',
+            'Item 1',
+        );
+
+        await checkHtmlToText('<b>A  B  C  D  E\n\nF  G</b>', 'A B C D E F G');
+        await checkHtmlToText('<pre>A  B  C  D  E\n\nF  G</pre>', 'A  B  C  D  E\n\nF  G');
+        await checkHtmlToText('<pre><code>A  B\n  C</code></pre>', 'A  B\n  C');
+        await checkHtmlToText('<pre>A  <b>B\n  <i>C  D</i></b></pre>', 'A  B\n  C  D');
+        await checkHtmlToText('<pre><code><span>a</span><br><span>    b</span></code></pre>', 'a\n    b');
+
+        await checkHtmlToText(
+            '<h1>Heading 1</h1><div><div><div><div>Deep  Div</div></div></div></div><h2>Heading       2</h2>',
+            'Heading 1\nDeep Div\nHeading 2',
+        );
+
+        await checkHtmlToText('<a>this_word</a>_should_<b></b>be_<span>one</span>', 'this_word_should_be_one');
+        await checkHtmlToText('<span attributes="should" be="ignored">some <span>text</span></span>', 'some text');
+
+        await checkHtmlToText(
+            `<table>
+                <tr>
+                    <td>Cell    A1</td><td>Cell A2</td>
+                    <td>    Cell A3    </td>
+                </tr>
+                <tr>
+                    <td>Cell    B1</td><td>Cell B2</td>
+                </tr>
+            </table>`,
+            'Cell A1\tCell A2\tCell A3 \t\nCell B1\tCell B2',
+        );
+    });
+
+    test('separates HTML5 block elements and table header cells', async () => {
+        await checkHtmlToText(
+            '<section>Call 555-1234</section><section>9876 Main St</section>',
+            'Call 555-1234\n9876 Main St',
+        );
+        await checkHtmlToText(
+            '<header>Head</header><nav>Menu</nav><main><article>One</article><article>Two</article></main><aside>Side</aside><footer>Foot</footer>',
+            'Head\nMenu\nOne\nTwo\nSide\nFoot',
+        );
+        await checkHtmlToText('A<hr>B', 'A\nB');
+        await checkHtmlToText('<dl><dt>Term</dt><dd>Definition</dd></dl>', 'Term\nDefinition');
+        await checkHtmlToText(
+            '<figure><img src="x.png"><figcaption>Caption</figcaption></figure>After',
+            'Caption\nAfter',
+        );
+        await checkHtmlToText('<details><summary>Summary</summary>Details</details>', 'Summary\nDetails');
+        await checkHtmlToText(
+            '<table><tr><th>Name</th><th>Phone</th></tr><tr><td>Alice</td><td>555-1234</td></tr></table>',
+            'Name\tPhone\t\nAlice\t555-1234',
+        );
+    });
+
+    test('handles HTML entities correctly', async () => {
+        await checkHtmlToText('<span>&aacute; &eacute;</span>', 'á é');
+    });
+
+    test('handles larger HTML documents', async () => {
+        const { html, text } = htmlToTextData;
+        // Careful here - don't change any whitespace in the text below or the test will break, even trailing!
+        await checkHtmlToText(html, text, true);
+    });
+
+    test('handles documents with many nodes in linear time', async () => {
+        const count = 160_000;
+        const html = `<html><body><div>${'<i> a</i>'.repeat(count)}</div></body></html>`;
+        const start = performance.now();
+        const text = await htmlToText(html);
+        expect(performance.now() - start).toBeLessThan(2_000);
+        expect(text).toEqual('a'.repeat(count).split('').join(' '));
+    });
+
+    test('works with Cheerio object', async () => {
+        const html1 = '<html><body>Some text</body></html>';
+        await checkHtmlToText(cheerio.load(html1), 'Some text');
+
+        const html2 = '<h1>Text outside of body</h1>';
+        await checkHtmlToText(cheerio.load(html2), 'Text outside of body');
+    });
+});

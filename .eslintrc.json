@@ -1,4 +1,0 @@
-{
-    "extends": ["@apify"],
-    "parser": "@babel/eslint-parser"
-}
